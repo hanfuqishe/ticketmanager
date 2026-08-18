@@ -1,0 +1,17 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+
+# VS Code
+.vs/
+.vscode/
+*.code-workspace
+
+# 本地数据库与配置
+*.db
+*.db-journal
+
+# 图标生成器预览
+tools/IconGen/preview.png

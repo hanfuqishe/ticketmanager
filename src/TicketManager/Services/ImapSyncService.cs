@@ -24,11 +24,13 @@ public class ImapSyncService
     /// 否则增量拉取 lastUid 之后的新邮件。
     /// 提供 onMonitoredEmail 回调时，命中“关注客服邮箱”的邮件会实时交给回调处理（便于逐封落库），
     /// 否则收集到返回列表中。onUidProcessed 每处理完一个 UID 即回调，便于实时推进同步游标。
+    /// skipIfExists 提供“某 UID 是否已在本地”的判定时，已存在的邮件直接跳过、不再重复下载。
     /// </summary>
     public async Task<SyncResult> SyncAsync(
         string folderName, uint lastUid,
         Func<EmailMessage, Task>? onMonitoredEmail = null,
         Action<uint>? onUidProcessed = null,
+        Func<uint, bool>? skipIfExists = null,
         IProgress<string>? progress = null)
     {
         using var client = new ImapClient();
@@ -54,12 +56,16 @@ public class ImapSyncService
         int i = 0, total = uids.Count;
         foreach (var uid in uids)
         {
-            var msg = await folder.GetMessageAsync(uid);
-            var email = ToEmailMessage(uid, folderName, msg);
-            if (email != null && IsMonitored(email))
+            // 本地已存在该邮件（同文件夹+UID）→ 跳过，不再重复下载
+            if (skipIfExists?.Invoke(uid.Id) != true)
             {
-                if (onMonitoredEmail != null) await onMonitoredEmail(email);
-                else emails.Add(email);
+                var msg = await folder.GetMessageAsync(uid);
+                var email = ToEmailMessage(uid, folderName, msg);
+                if (email != null && IsMonitored(email))
+                {
+                    if (onMonitoredEmail != null) await onMonitoredEmail(email);
+                    else emails.Add(email);
+                }
             }
             if (uid.Id > maxUid) maxUid = uid.Id;
             onUidProcessed?.Invoke(uid.Id);
@@ -69,6 +75,66 @@ public class ImapSyncService
 
         await client.DisconnectAsync(true);
         return new SyncResult(emails, maxUid);
+    }
+
+    /// <summary>
+    /// 用 IMAP IDLE 监听新邮件：连接并保持收件箱打开，收到“新邮件到达”通知时返回 true；
+    /// 空闲超时（无新邮件）则继续监听。连接断开时抛出异常，由调用方重连。
+    /// 服务器不支持 IDLE 时退化为定期 NOOP 轮询。
+    /// </summary>
+    public async Task<bool> WaitForNewMailAsync(string folderName, TimeSpan idleTimeout, CancellationToken ct)
+    {
+        using var client = new ImapClient();
+        client.ProxyClient = CreateProxy();
+        var socketOptions = _config.ImapUseSsl ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.Auto;
+        await client.ConnectAsync(_config.ImapHost, _config.ImapPort, socketOptions, ct);
+        await client.AuthenticateAsync(_config.ImapUsername, _config.ImapPassword, ct);
+
+        var folder = await client.GetFolderAsync(folderName, ct) as ImapFolder
+            ?? throw new InvalidOperationException("无法打开 IMAP 文件夹");
+        await folder.OpenAsync(FolderAccess.ReadOnly, ct);
+
+        bool newMail = false;
+        CancellationTokenSource? doneCts = null;
+        // 有新邮件（或数量变化）时置标志并结束当前 IDLE
+        void OnCountChanged(object? s, EventArgs e)
+        {
+            newMail = true;
+            try { doneCts?.Cancel(); } catch (ObjectDisposedException) { }
+        }
+        folder.CountChanged += OnCountChanged;
+
+        try
+        {
+            if (client.Capabilities.HasFlag(ImapCapabilities.Idle))
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    newMail = false;
+                    using var done = new CancellationTokenSource(idleTimeout);
+                    doneCts = done;
+                    try { await client.IdleAsync(done.Token, ct); }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
+                    if (newMail) return true; // 有新邮件到达
+                }
+            }
+            else
+            {
+                // 服务器不支持 IDLE：退化为定期 NOOP 轮询
+                while (!ct.IsCancellationRequested)
+                {
+                    newMail = false;
+                    await Task.Delay(TimeSpan.FromSeconds(30), ct);
+                    await client.NoOpAsync(ct);
+                    if (newMail) return true;
+                }
+            }
+            return false;
+        }
+        finally
+        {
+            folder.CountChanged -= OnCountChanged;
+        }
     }
 
     /// <summary>

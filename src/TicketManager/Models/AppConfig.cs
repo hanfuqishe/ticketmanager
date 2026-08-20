@@ -15,12 +15,16 @@ public class AppConfig
     // ===== 关注的客服邮箱 =====
     public List<string> MonitoredAddresses { get; set; } = new();
 
+    // ===== 域名→企业 映射（用于从抄送/收件人地址推断企业） =====
+    public Dictionary<string, string> DomainEnterpriseMappings { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     // ===== DeepSeek =====
     public string DeepSeekApiKey { get; set; } = "";
     public string DeepSeekBaseUrl { get; set; } = "https://api.deepseek.com";
     public string DeepSeekModel { get; set; } = "deepseek-chat";
     public bool EnableAiTitle { get; set; } = true;
     public bool EnableAiStatus { get; set; } = true;
+    public bool EnableAiMeta { get; set; } = true; // 主题未按约定标注产品/客户时，用 AI 分析补齐
 
     // ===== 代理 =====
     public bool UseProxy { get; set; }
@@ -33,4 +37,5 @@ public class AppConfig
     // ===== 其他 =====
     public int FirstSyncDays { get; set; } = 7;
     public int MaxBodyChars { get; set; } = 6000;
+    public bool EnableAutoSync { get; set; } = true; // 新邮件到达时自动收取（IMAP IDLE）
 }

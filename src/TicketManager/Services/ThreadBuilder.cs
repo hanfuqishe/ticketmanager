@@ -66,8 +66,14 @@ public class ThreadBuilder
         var sorted = emails.OrderBy(e => e.DateSent).ToList();
         BuildRelationsAndAttachOrphans(sorted);
 
-        var product = Majority(sorted, e => e.Product);
-        var enterprise = Majority(sorted, e => e.Enterprise);
+        // 根邮件（真正源头）的产品/客户优先作为整棵线程的产品/客户；空缺时回退多数投票
+        var root = sorted.FirstOrDefault(e => e.Parent == null) ?? sorted.FirstOrDefault();
+        var product = root != null && !string.IsNullOrEmpty(root.Product)
+            ? root.Product
+            : Majority(sorted, e => e.Product);
+        var enterprise = root != null && !string.IsNullOrEmpty(root.Enterprise)
+            ? root.Enterprise
+            : Majority(sorted, e => e.Enterprise);
         var ticket = sorted.FirstOrDefault(e => !string.IsNullOrEmpty(e.TicketNumber))?.TicketNumber ?? "";
 
         var roots = sorted.Where(e => e.Parent == null).OrderBy(e => e.DateSent).ToList();
@@ -114,20 +120,25 @@ public class ThreadBuilder
 
     /// <summary>
     /// 建立父子关系后，把同一工单线程内无法关联的“孤根”挂到最早一封下面，
-    /// 保证线程只有一个根（真正的源头），其余邮件正确缩进。
+    /// 保证线程只有一个根（真正的源头），其余邮件正确缩进；并把各节点子节点按时间升序重排。
     /// </summary>
     private static void BuildRelationsAndAttachOrphans(List<EmailMessage> emails)
     {
         BuildRelations(emails);
         var sorted = emails.OrderBy(e => e.DateSent).ToList();
         var roots = sorted.Where(e => e.Parent == null).ToList();
-        if (roots.Count <= 1) return;
-        var main = roots[0];
-        foreach (var orphan in roots.Skip(1))
+        if (roots.Count > 1)
         {
-            orphan.Parent = main;
-            main.Children.Add(orphan);
+            var main = roots[0];
+            foreach (var orphan in roots.Skip(1))
+            {
+                orphan.Parent = main;
+                main.Children.Add(orphan);
+            }
         }
+        // 每个节点的子节点按时间升序（挂载孤根后可能打乱顺序）
+        foreach (var e in emails)
+            e.Children = e.Children.OrderBy(c => c.DateSent).ToList();
     }
 
     // ===== 展示树（折叠规则）=====
@@ -138,7 +149,7 @@ public class ThreadBuilder
         if (root.Children.Count == 1)
             node.Children.AddRange(BuildChain(root.Children[0], 1));
         else
-            foreach (var c in root.Children)
+            foreach (var c in root.Children.OrderBy(x => x.DateSent))
                 node.Children.AddRange(BuildChain(c, 1));
         return new List<ThreadNode> { node };
     }

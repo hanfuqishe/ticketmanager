@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Media;
 using TicketManager.Models;
 using TicketManager.Services;
 
@@ -52,6 +53,29 @@ public class MainViewModel : ViewModelBase
     private string _statusText = "就绪";
     public string StatusText { get => _statusText; set => Set(ref _statusText, value); }
 
+    private string _searchText = "";
+    /// <summary>检索关键字：只匹配线索根邮件的主题（原主题与 AI 翻译），变化时即时过滤重建树。</summary>
+    public string SearchText
+    {
+        get => _searchText;
+        set
+        {
+            if (Set(ref _searchText, value))
+                RebuildTree();
+        }
+    }
+
+    /// <summary>线索根邮件主题是否匹配检索关键字（留空显示全部）。</summary>
+    private bool MatchesSearch(TicketThread t)
+    {
+        if (string.IsNullOrWhiteSpace(_searchText)) return true;
+        var q = _searchText.Trim();
+        var root = t.Emails.Count > 0 ? t.Emails[0] : t.DisplayRoots.FirstOrDefault()?.Email;
+        if (root == null) return false;
+        return root.Subject.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+               root.AiTitle.Contains(q, StringComparison.OrdinalIgnoreCase);
+    }
+
     private ThreadViewModel? _selectedThread;
     public ThreadViewModel? SelectedThread
     {
@@ -62,6 +86,8 @@ public class MainViewModel : ViewModelBase
             {
                 OnPropertyChanged(nameof(SelectedThreadHeader));
                 OnPropertyChanged(nameof(SelectedThreadSummary));
+                OnPropertyChanged(nameof(SelectedSummaryBorder));
+                OnPropertyChanged(nameof(SelectedSummaryBackground));
             }
         }
     }
@@ -84,6 +110,10 @@ public class MainViewModel : ViewModelBase
     public string SelectedThreadHeader => SelectedThread?.Header ?? "未选择工单";
     public string SelectedThreadSummary =>
         SelectedThread?.Summary ?? "从左侧选择一条工单线索，查看邮件往来与智能总结。";
+
+    /// <summary>AI 总结框配色（随工单状态变化）。</summary>
+    public Brush SelectedSummaryBorder => SelectedThread?.SummaryBorder ?? Brushes.Gray;
+    public Brush SelectedSummaryBackground => SelectedThread?.SummaryBackground ?? Brushes.LightGray;
     public string SelectedEmailTitle => SelectedEmail?.Title ?? "";
     public string SelectedEmailMeta => SelectedEmail?.Meta ?? "";
     public string SelectedEmailBody => SelectedEmail?.Body ?? "";
@@ -103,12 +133,117 @@ public class MainViewModel : ViewModelBase
         ClearDataCommand = new RelayCommand(async _ => await ClearAllDataAsync());
     }
 
+    private CancellationTokenSource? _autoSyncCts;
+
+    /// <summary>启动自动收取（IMAP IDLE 监听新邮件，到达即自动同步）。按当前配置决定是否开启。</summary>
+    public void StartAutoSync()
+    {
+        StopAutoSync();
+        if (!_workflow.Config.EnableAutoSync) return;
+        if (string.IsNullOrWhiteSpace(_workflow.Config.ImapUsername) ||
+            string.IsNullOrWhiteSpace(_workflow.Config.ImapHost)) return;
+
+        _autoSyncCts = new CancellationTokenSource();
+        var ct = _autoSyncCts.Token;
+        var progress = new Progress<string>(s => StatusText = s);
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _workflow.RunAutoSyncLoopAsync(
+                    onSynced: _ => Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        _threads = _workflow.LoadThreads();
+                        RebuildTree();
+                    }),
+                    progress, ct);
+            }
+            catch (OperationCanceledException) { }
+        }, ct);
+    }
+
+    /// <summary>停止自动收取。</summary>
+    public void StopAutoSync()
+    {
+        _autoSyncCts?.Cancel();
+        _autoSyncCts?.Dispose();
+        _autoSyncCts = null;
+    }
+
     public void Load()
     {
         _workflow.LoadConfig(); // 确保配置已加载（发件人配色需要客服邮箱与自身邮箱）
         _threads = _workflow.LoadThreads();
         RebuildTree();
         StatusText = $"已加载 {_threads.Count} 条工单线索";
+    }
+
+    /// <summary>启动时：先自动同步一次，随后进入自动收取新邮件模式（若已启用）。</summary>
+    public async void AutoSyncAndListen()
+    {
+        await SyncAsync();
+        StartAutoSync();
+    }
+
+    /// <summary>重新加载线程并重建树（手工设置产品/客户后刷新）。</summary>
+    public void Reload()
+    {
+        _threads = _workflow.LoadThreads();
+        RebuildTree();
+    }
+
+    /// <summary>手工设置线程状态：更新数据库 + 内存线程对象，并就地刷新根邮件显示（不重建树，避免闪烁）。</summary>
+    public void SetThreadStatus(long threadId, string status)
+    {
+        _workflow.SetThreadStatus(threadId, status);
+        foreach (var cust in Customers)
+            foreach (var prod in cust.Products)
+                foreach (var root in prod.Threads)
+                {
+                    if (root.Email.ThreadId != threadId) continue;
+                    root.ThreadOwner.Thread.Status = status;
+                    root.ThreadOwner.Thread.StatusSummary = "";
+                    root.RefreshThreadInfo();
+                    break;
+                }
+        // 若右侧详情面板显示的是该线程，同步刷新标题/总结/状态框配色
+        if (SelectedThread != null && SelectedThread.Thread.Id == threadId)
+        {
+            OnPropertyChanged(nameof(SelectedThreadHeader));
+            OnPropertyChanged(nameof(SelectedThreadSummary));
+            OnPropertyChanged(nameof(SelectedSummaryBorder));
+            OnPropertyChanged(nameof(SelectedSummaryBackground));
+        }
+    }
+
+    /// <summary>立即用 AI 重新生成某线程的状态/总结并就地刷新显示（不重建树）。</summary>
+    public async Task RegenerateThreadStatusAsync(long threadId)
+    {
+        StatusText = "正在用 AI 总结该工单…";
+        var r = await _workflow.RegenerateThreadStatusAsync(threadId);
+        if (r == null)
+        {
+            StatusText = "AI 总结失败（可能未配置 API Key 或调用出错）";
+            return;
+        }
+        foreach (var cust in Customers)
+            foreach (var prod in cust.Products)
+                foreach (var root in prod.Threads)
+                {
+                    if (root.Email.ThreadId != threadId) continue;
+                    root.ThreadOwner.Thread.Status = r.Value.Status;
+                    root.ThreadOwner.Thread.StatusSummary = r.Value.Summary;
+                    root.RefreshThreadInfo();
+                    break;
+                }
+        if (SelectedThread != null && SelectedThread.Thread.Id == threadId)
+        {
+            OnPropertyChanged(nameof(SelectedThreadHeader));
+            OnPropertyChanged(nameof(SelectedThreadSummary));
+            OnPropertyChanged(nameof(SelectedSummaryBorder));
+            OnPropertyChanged(nameof(SelectedSummaryBackground));
+        }
+        StatusText = "AI 总结已更新";
     }
 
     private async Task SyncAsync()
@@ -144,6 +279,7 @@ public class MainViewModel : ViewModelBase
         };
         win.ShowDialog();
         Load();
+        StartAutoSync(); // 按最新设置重启自动收取
     }
 
     private async Task ClearAllDataAsync()
@@ -193,6 +329,7 @@ public class MainViewModel : ViewModelBase
         var supportAddresses = _workflow.Config.MonitoredAddresses;
         var selfAddress = _workflow.Config.ImapUsername;
         var customerGroups = threads
+            .Where(MatchesSearch)
             .GroupBy(t => string.IsNullOrEmpty(t.Enterprise) ? "未分类客户" : t.Enterprise);
 
         var orderedCustomers = mode switch
@@ -216,18 +353,15 @@ public class MainViewModel : ViewModelBase
             foreach (var pg in orderedProducts)
             {
                 var product = new ProductGroupViewModel(pg.Key);
-                var orderedThreads = mode switch
-                {
-                    TreeSortMode.Time => pg.OrderByDescending(t => t.LastActivity),
-                    TreeSortMode.Product => pg.OrderBy(t => t.Product, StringComparer.Ordinal)
-                                              .ThenBy(t => t.TicketNumber, StringComparer.Ordinal)
-                                              .ThenByDescending(t => t.LastActivity),
-                    _ => pg.OrderBy(t => t.Enterprise, StringComparer.Ordinal)
-                            .ThenBy(t => t.TicketNumber, StringComparer.Ordinal)
-                            .ThenByDescending(t => t.LastActivity),
-                };
+                // 同一产品下的所有邮件树一律按最后更新时间倒序（与全局排序模式无关）
+                var orderedThreads = pg.OrderByDescending(t => t.LastActivity);
                 foreach (var t in orderedThreads)
-                    product.Threads.Add(new ThreadViewModel(t, supportAddresses, selfAddress));
+                {
+                    // 工单层并入根邮件节点：状态/工单号/总结显示在根邮件上，不再有独立工单行
+                    var owner = new ThreadViewModel(t, supportAddresses, selfAddress);
+                    foreach (var root in owner.Children)
+                        product.Threads.Add(root);
+                }
                 customer.Products.Add(product);
             }
             Customers.Add(customer);

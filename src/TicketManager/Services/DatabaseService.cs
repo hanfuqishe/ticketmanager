@@ -105,6 +105,22 @@ public class DatabaseService : IDisposable
     public void SetLastUid(string folder, uint uid)
         => SetSetting($"lastuid:{folder}", uid.ToString());
 
+    /// <summary>重置所有同步游标，使下次同步按首次同步（最近 FirstSyncDays 天）重新拉取时间窗口内的邮件。</summary>
+    public void ResetSyncCursors()
+    {
+        using var conn = Open();
+        conn.Execute("DELETE FROM Settings WHERE \"Key\" LIKE 'lastuid:%'");
+    }
+
+    /// <summary>判断某文件夹下某 UID 的邮件是否已在本地（按 Folder+Uid），用于同步时跳过已下载的邮件。</summary>
+    public bool EmailExistsByUid(string folder, uint uid)
+    {
+        using var conn = Open();
+        return conn.ExecuteScalar<long?>(
+            "SELECT Id FROM Emails WHERE Folder = @folder AND Uid = @uid LIMIT 1",
+            new { folder, uid }) != null;
+    }
+
     // ================= Emails =================
 
     /// <summary>按 MessageId（其次 Folder+Uid）去重后插入或更新，返回记录 Id。</summary>
@@ -187,6 +203,45 @@ public class DatabaseService : IDisposable
             """, new { id, p.TicketNumber, p.Product, p.Enterprise, Fault = p.Fault });
     }
 
+    /// <summary>
+    /// 获取 产品候选列表：仅收录 主题方括号 中标注、且未被手工/AI 覆盖的产品（绝对可信）。
+    /// 规则：解析出的产品必须等于当前存储值，即该产品确实来自主题方括号标签，
+    /// 而非 AI 推断或手工修改（那些不算产品名称）。
+    /// </summary>
+    public List<string> GetKnownProducts()
+    {
+        var set = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in LoadAllEmails())
+        {
+            var parsed = SubjectParser.Parse(e.Subject);
+            if (parsed != null && parsed.Product.Length > 0 && parsed.Product == e.Product)
+                set.Add(parsed.Product);
+        }
+        return set.ToList();
+    }
+
+    /// <summary>获取库中已出现的客户列表（去重）。</summary>
+    public List<string> GetKnownEnterprises()
+    {
+        using var conn = Open();
+        return conn.Query<string>("SELECT DISTINCT Enterprise FROM Emails WHERE Enterprise <> '' ORDER BY Enterprise").ToList();
+    }
+
+    /// <summary>手工设置某封邮件及其同线程所有邮件（整棵线程统一）的 产品/客户，使整棵线程归位。</summary>
+    public void SetEmailAndThreadMeta(long emailId, string product, string enterprise)
+    {
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+        var tid = conn.ExecuteScalar<long>("SELECT ThreadId FROM Emails WHERE Id=@emailId", new { emailId }, tx);
+        // 手工指定的产品/客户是权威值：目标邮件一律覆盖；同线程其余邮件也一律覆盖，确保整棵线程归位
+        conn.Execute("UPDATE Emails SET Product=@product, Enterprise=@enterprise WHERE Id=@emailId",
+            new { emailId, product, enterprise }, tx);
+        if (tid > 0)
+            conn.Execute("UPDATE Emails SET Product=@product, Enterprise=@enterprise WHERE ThreadId=@tid AND Id<>@emailId",
+                new { product, enterprise, tid, emailId }, tx);
+        tx.Commit();
+    }
+
     /// <summary>每个线程最早的一封（树的首封/根）不做 AI 提炼，返回这些邮件的 Id 集合。</summary>
     public HashSet<long> GetFirstEmailIdsPerThread()
     {
@@ -204,34 +259,48 @@ public class DatabaseService : IDisposable
         return rows.Select(r => (long)r.Id).ToHashSet();
     }
 
-    /// <summary>清空每个线程首封邮件的 AI 标题，使其直接显示原主题。</summary>
+    /// <summary>
+    /// 清空每个线程首封邮件的 AI 标题：中文主题的首封保留原主题（清空 AI 标题）；
+    /// 英文主题的首封保留 AI 翻译标题（不在此清空）。
+    /// </summary>
     public void ClearFirstEmailTitles()
     {
+        var firstIds = GetFirstEmailIdsPerThread();
+        if (firstIds.Count == 0) return;
         using var conn = Open();
-        conn.Execute("""
-            UPDATE Emails
-            SET AiTitle = ''
-            WHERE ThreadId > 0
-              AND Id = (
-                  SELECT e2.Id FROM Emails e2
-                  WHERE e2.ThreadId = Emails.ThreadId
-                  ORDER BY e2.DateSent, e2.Id
-                  LIMIT 1
-              )
-            """);
+        foreach (var id in firstIds)
+        {
+            var subject = conn.ExecuteScalar<string>("SELECT Subject FROM Emails WHERE Id=@id", new { id }) ?? "";
+            if (!string.IsNullOrEmpty(subject) && !SubjectParser.ContainsCjk(subject)) continue; // 英文：保留翻译
+            conn.Execute("UPDATE Emails SET AiTitle='' WHERE Id=@id", new { id });
+        }
     }
 
     // ================= Threads =================
 
-    /// <summary>全量重建线程表：清空 Threads、重置 ThreadId，再按新线程写回。</summary>
+    /// <summary>全量重建线程表：清空 Threads、重置 ThreadId，再按新线程写回；保留已有线程的 AI 状态/总结（按工单号匹配）。</summary>
     public void PersistThreads(List<TicketThread> threads)
     {
         using var conn = Open();
         using var tx = conn.BeginTransaction();
+
+        // 重建前保留已有线程的 AI 状态/总结，避免手工设置产品/客户等重建后丢失
+        var old = new Dictionary<string, (string Status, string Summary)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in conn.Query("SELECT TicketNumber, Status, StatusSummary FROM Threads"))
+        {
+            var key = ((string)r.TicketNumber).Trim();
+            if (key.Length == 0) continue;
+            old[key] = ((string)r.Status, (string)r.StatusSummary);
+        }
+
         conn.Execute("DELETE FROM Threads", transaction: tx);
         conn.Execute("UPDATE Emails SET ThreadId = 0", transaction: tx);
         foreach (var t in threads)
         {
+            var key = t.TicketNumber.Trim();
+            var hasOld = old.TryGetValue(key, out var prev);
+            var status = hasOld ? prev.Status : t.Status;
+            var summary = hasOld ? prev.Summary : t.StatusSummary;
             var tid = conn.ExecuteScalar<long>("""
                 INSERT INTO Threads (TicketNumber, Product, Enterprise, Status, StatusSummary, FirstActivity, LastActivity)
                 VALUES (@TicketNumber, @Product, @Enterprise, @Status, @StatusSummary, @FirstActivity, @LastActivity);
@@ -239,7 +308,7 @@ public class DatabaseService : IDisposable
                 """,
                 new
                 {
-                    t.TicketNumber, t.Product, t.Enterprise, t.Status, t.StatusSummary,
+                    t.TicketNumber, t.Product, t.Enterprise, Status = status, StatusSummary = summary,
                     FirstActivity = t.FirstActivity.ToString("o"),
                     LastActivity = t.LastActivity.ToString("o")
                 }, tx);

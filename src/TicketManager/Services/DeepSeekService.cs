@@ -61,7 +61,7 @@ public class DeepSeekService : IDisposable
             "你是一名 IT 技术支持工程师。以下是某个工单的完整邮件往来记录。" +
             "请判断该工单当前的进展状态，并用一句话简要说明。" +
             "严格按以下格式输出，不要多余内容：\n" +
-            "状态：<新建|处理中|等待客户回复|等待客服回复|等待研发回复|已解决|需升级>\n" +
+            "状态：<新建|处理中|等待客户回复|等待客服回复|等待研发回复|纳入开发计划|合并或拆分为其他工单|已解决|需升级>\n" +
             "总结：<一句话>\n" +
             "方向判断：看最后一封邮件的发件人。若最后一封是客户发的（如客户刚上传日志/提供信息），" +
             "说明轮到客服/技术支持回复，状态应为「等待客服回复」或「处理中」；" +
@@ -102,6 +102,43 @@ public class DeepSeekService : IDisposable
             string.Equals(last.FromAddress, _config.ImapUsername, StringComparison.OrdinalIgnoreCase) ||
             _config.MonitoredAddresses.Any(m => string.Equals(last.FromAddress, m, StringComparison.OrdinalIgnoreCase));
         return supportSpokeLast ? "等待客户回复" : "等待客服回复";
+    }
+
+    /// <summary>
+    /// 主题未按约定标注 产品/客户 时，用 AI 从主题与邮箱地址中分析提取。
+    /// 返回 (产品, 客户)，无法确定则为空串；两者都空返回 null。
+    /// </summary>
+    public async Task<(string Product, string Enterprise)?> ExtractMetaAsync(EmailMessage email)
+    {
+        if (!Configured) return null;
+        const string systemPrompt =
+            "你是一名 IT 技术支持工程师。下面是一封工单相关邮件的主题与邮箱地址。" +
+            "请判断这封邮件涉及的产品名称和客户企业名称。\n" +
+            "依据：产品名称从主题中找（可能是简称，如 EC=Endpoint Central、OPM=OPManager）；" +
+            "企业名称从发件人/收件人/抄送人的邮箱域名推断（如 @want-want.com 通常对应某企业），可结合常见企业知识。" +
+            "注意：域名中含 zoho 或 manageengine 的是本产品厂家（Zoho/ManageEngine）人员，不是客户企业，推断时请排除；" +
+            "其他邮箱域名才是客户。" +
+            "无法确定就留空，不要编造。\n" +
+            "严格只输出两行：\n产品：<名称，无法确定则留空>\n企业：<名称，无法确定则留空>";
+
+        var userContent = new StringBuilder();
+        userContent.AppendLine($"【主题】{email.Subject}");
+        userContent.AppendLine($"【发件人】{email.FromAddress}");
+        userContent.AppendLine($"【收件人】{email.ToAddresses}");
+        userContent.AppendLine($"【抄送】{email.CcAddresses}");
+
+        var resp = await ChatAsync(systemPrompt, userContent.ToString(), maxTokens: 100);
+        if (string.IsNullOrWhiteSpace(resp)) return null;
+
+        string product = "", enterprise = "";
+        foreach (var line in resp.Split('\n'))
+        {
+            var t = line.Trim();
+            if (t.StartsWith("产品：")) product = t["产品：".Length..].Trim();
+            else if (t.StartsWith("企业：")) enterprise = t["企业：".Length..].Trim();
+        }
+        if (string.IsNullOrEmpty(product) && string.IsNullOrEmpty(enterprise)) return null;
+        return (SubjectParser.NormalizeProduct(product), enterprise);
     }
 
     private async Task<string?> ChatAsync(string systemPrompt, string userContent, int maxTokens)

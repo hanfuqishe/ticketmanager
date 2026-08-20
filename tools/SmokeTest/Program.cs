@@ -57,6 +57,11 @@ Check(p10?.Product == "Endpoint Central" && p10?.Enterprise == "旺旺集团",
 var p11 = SubjectParser.Parse("【OPM】【某某公司】监控告警");
 Check(p11?.Product == "OPManager", $"OPM 简称规范化 -> 产品={p11?.Product}");
 
+var p12 = SubjectParser.Parse("Re:[## 8374379 ##] [ EC Feature Request – Shared Group Management Permissions for Administrators ]");
+Check(p12?.TicketNumber == "8374379" && p12?.Product == "Endpoint Central" && p12?.Enterprise == "" &&
+      p12?.Fault == "Feature Request – Shared Group Management Permissions for Administrators",
+      $"长标签(>3词)按标题拆解 -> 工单={p12?.TicketNumber}|产品={p12?.Product}|客户={p12?.Enterprise}|故障={p12?.Fault}");
+
 Console.WriteLine();
 Console.WriteLine("=== 2. 线程重建与缩进折叠规则 ===");
 Console.WriteLine("场景：首封 m1；m1 有 2 个回复 A(m2)、C(m4)；A 只有 1 个回复 B(m3)→应折叠为同级(深度1)；C 有 2 个回复 D(m5)、E(m6)→分支(深度2)");
@@ -143,6 +148,29 @@ Check(oFlat[1] is ("o2", 1), $"o2 深度 1（挂到根下） -> {oFlat[1]}");
 Check(oFlat[2] is ("o3", 1), $"o3 深度 1（挂到根下） -> {oFlat[2]}");
 
 Console.WriteLine();
+Console.WriteLine("=== 6. 同一树内邮件按时间排序（孤根早于真实回复） ===");
+var tEmails = new List<EmailMessage>();
+EmailMessage TAdd(string id, string ticket, DateTimeOffset dt, string inReplyTo = "", string refs = "")
+{
+    var e = new EmailMessage
+    {
+        Id = tEmails.Count + 1, MessageId = id, TicketNumber = ticket,
+        DateSent = dt, DateReceived = dt, InReplyTo = inReplyTo, References = refs
+    };
+    tEmails.Add(e);
+    return e;
+}
+TAdd("t1", "T6", new DateTimeOffset(2026, 8, 3, 9, 0, 0, TimeSpan.Zero));
+TAdd("t2", "T6", new DateTimeOffset(2026, 8, 3, 11, 0, 0, TimeSpan.Zero), "t1", "t1");
+TAdd("t3", "T6", new DateTimeOffset(2026, 8, 3, 10, 0, 0, TimeSpan.Zero));
+var tThreads = new ThreadBuilder().Build(tEmails);
+var tFlat = Flatten(tThreads[0].DisplayRoots).ToList();
+Check(tFlat.Count == 3, $"展示树 3 个节点（实际 {tFlat.Count}）");
+Check(tFlat[0] is ("t1", 0), $"根 t1 深度 0 -> {tFlat[0]}");
+Check(tFlat[1] is ("t3", 1), $"孤根 t3(10:00) 排在回复 t2(11:00) 之前 -> {tFlat[1]}");
+Check(tFlat[2] is ("t2", 1), $"回复 t2 随后 -> {tFlat[2]}");
+
+Console.WriteLine();
 Console.WriteLine("=== 3. SQLite 数据库读写 ===");
 var dbPath = Path.Combine(Path.GetTempPath(), "tm_smoke_" + Guid.NewGuid().ToString("N") + ".db");
 var db = new DatabaseService(dbPath);
@@ -162,6 +190,22 @@ db.SetSetting("k1", "v1");
 Check(db.GetSetting("k1") == "v1", "Settings 读写");
 db.ClearAiData();
 Check(db.LoadAllEmails().First(e => e.Id == id).AiTitle == "", "ClearAiData 清空 AI 字段");
+
+Console.WriteLine();
+Console.WriteLine("=== 7. 英文企业名对照 域名→企业 映射表翻译 ==");
+var workflow = new WorkflowService(db);
+db.SetSetting("domain_mappings", System.Text.Json.JsonSerializer.Serialize(
+    new Dictionary<string, string> { ["want-want.com"] = "旺旺集团", ["mail.abc-corp.cn"] = "ABC 公司" }));
+workflow.LoadConfig();
+Check(workflow.ResolveEnterpriseName("want-want") == "旺旺集团",
+    $"want-want -> 旺旺集团（实际: {workflow.ResolveEnterpriseName("want-want")}）");
+Check(workflow.ResolveEnterpriseName("abc-corp") == "ABC 公司",
+    $"mail.abc-corp.cn 含标签 abc-corp -> ABC 公司（实际: {workflow.ResolveEnterpriseName("abc-corp")}）");
+Check(workflow.ResolveEnterpriseName("旺旺集团") == "旺旺集团",
+    $"已是中文原样返回（实际: {workflow.ResolveEnterpriseName("旺旺集团")}）");
+Check(workflow.ResolveEnterpriseName("UnknownCo") == "UnknownCo",
+    $"无匹配英文名原样返回（实际: {workflow.ResolveEnterpriseName("UnknownCo")}）");
+
 Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
 File.Delete(dbPath);
 

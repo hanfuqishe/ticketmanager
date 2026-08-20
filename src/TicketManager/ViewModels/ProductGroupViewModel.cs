@@ -5,8 +5,11 @@ namespace TicketManager.ViewModels;
 public class ProductGroupViewModel
 {
     public string Name { get; }
-    public ObservableCollection<ThreadViewModel> Threads { get; } = new();
+    public ObservableCollection<EmailNodeViewModel> Threads { get; } = new();
 
     public ProductGroupViewModel(string name) => Name = name;
     public string CountText => $"{Threads.Count} 条";
+
+    /// <summary>默认展开（显示产品下的邮件树根）。</summary>
+    public bool ExpandedByDefault => true;
 }

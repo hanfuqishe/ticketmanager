@@ -53,6 +53,7 @@
                     <StackPanel Grid.Row="6" Grid.Column="1" Orientation="Horizontal" Margin="8,4">
                         <TextBox Text="{Binding Config.FirstSyncDays}" Width="90" Padding="4" VerticalAlignment="Center"/>
                         <TextBlock Text="天内的邮件" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                        <CheckBox Content="自动收取新邮件" IsChecked="{Binding Config.EnableAutoSync}" VerticalAlignment="Center" Margin="24,0,0,0"/>
                     </StackPanel>
 
                     <TextBlock Grid.Row="7" Grid.Column="0" Text="数据文件：" VerticalAlignment="Top" Margin="0,6,0,0"/>
@@ -92,6 +93,39 @@
                 </Grid>
             </TabItem>
 
+            <!-- ===== 域名→企业 ===== -->
+            <TabItem Header="域名→企业">
+                <Grid Margin="16">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0"
+                               Text="配置邮箱域名后缀与企业名称的对应关系（如 want-want.com → 旺旺集团）。当邮件主题分析不出企业时，会从发件/收件/抄送地址的域名按此映射推断企业（报障邮件抄送客户时尤其有效）。"
+                               TextWrapping="Wrap" Foreground="#555"/>
+                    <ListBox x:Name="MappingList" Grid.Row="1" ItemsSource="{Binding DomainMappings}" Margin="0,10"
+                             BorderBrush="#ccc">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}" Foreground="#1f3a5f"/>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <StackPanel Grid.Row="2" Orientation="Horizontal">
+                        <TextBox Text="{Binding NewDomain, UpdateSourceTrigger=PropertyChanged}" Width="180" Padding="4"
+                                 VerticalAlignment="Center" ToolTip="邮箱域名后缀，如 want-want.com"/>
+                        <TextBlock Text=" → " VerticalAlignment="Center" Margin="4,0"/>
+                        <TextBox Text="{Binding NewEnterprise, UpdateSourceTrigger=PropertyChanged}" Width="180" Padding="4"
+                                 VerticalAlignment="Center" ToolTip="企业名称，如 旺旺集团"/>
+                        <Button Content="添加" Command="{Binding AddMappingCommand}" Margin="8,0,0,0" Padding="12,4"/>
+                        <Button Content="删除选中" Command="{Binding RemoveMappingCommand}"
+                                CommandParameter="{Binding SelectedItem, ElementName=MappingList}"
+                                Margin="8,0,0,0" Padding="12,4"/>
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+
             <!-- ===== DeepSeek ===== -->
             <TabItem Header="DeepSeek AI">
                 <Grid Margin="16">
@@ -116,7 +150,8 @@
 
                     <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="8,6">
                         <CheckBox Content="为每封邮件生成一句话标题" IsChecked="{Binding Config.EnableAiTitle}" Margin="0,0,20,0"/>
-                        <CheckBox Content="为工单智能总结状态" IsChecked="{Binding Config.EnableAiStatus}"/>
+                        <CheckBox Content="为工单智能总结状态" IsChecked="{Binding Config.EnableAiStatus}" Margin="0,0,20,0"/>
+                        <CheckBox Content="主题未标注时用 AI 分析产品/客户" IsChecked="{Binding Config.EnableAiMeta}"/>
                     </StackPanel>
                 </Grid>
             </TabItem>

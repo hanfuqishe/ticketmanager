@@ -9,7 +9,7 @@ namespace TicketManager.ViewModels;
 public enum SenderRole { Self, Support, Customer }
 
 /// <summary>展示树中的一封邮件节点（递归）。</summary>
-public class EmailNodeViewModel
+public class EmailNodeViewModel : ViewModelBase
 {
     public EmailMessage Email { get; }
     public ThreadViewModel ThreadOwner { get; }
@@ -45,9 +45,9 @@ public class EmailNodeViewModel
         return SenderRole.Customer;
     }
 
-    /// <summary>展示标题：根邮件显示剥离 工单号/产品/客户 后的纯主题；其余优先 AI 标题，否则原标题。</summary>
-    public string Title => Depth == 0
-        ? PureSubject
+    /// <summary>展示标题：根邮件优先显示 AI 标题（英文主题翻译成中文），否则显示剥离标签后的纯主题；其余优先 AI 标题，否则原标题。</summary>
+    public string Title => IsRoot
+        ? (string.IsNullOrEmpty(Email.AiTitle) ? PureSubject : Email.AiTitle)
         : (string.IsNullOrEmpty(Email.AiTitle) ? Email.Subject : Email.AiTitle);
 
     /// <summary>纯主题：去掉 [工单号][产品][客户] 等前缀，只保留故障现象部分。</summary>
@@ -65,8 +65,47 @@ public class EmailNodeViewModel
     public string Badge => HasAiTitle ? "✨ " : "";
     public bool HasAiTitle => !string.IsNullOrEmpty(Email.AiTitle);
     public string Sender => Email.DisplaySender;
-    public string Time => Email.DateSent.LocalDateTime.ToString("MM-dd HH:mm");
+    /// <summary>行上显示的时间：根邮件（工单树）同时显示 首封时间 与 最后更新时间；其余显示本邮件时间。</summary>
+    public string Time => IsRoot ? RootTime : Email.DateSent.LocalDateTime.ToString("MM-dd HH:mm");
     public string SubLine => $"{Sender} · {Time}";
+
+    /// <summary>工单树根行的时间：创建（首封）时间 + 最后更新时间；两者相同则只显示一个。</summary>
+    private string RootTime
+    {
+        get
+        {
+            var first = Email.DateSent.LocalDateTime;
+            var last = ThreadOwner.Thread.LastActivity.LocalDateTime;
+            return first == last
+                ? $"{first:MM-dd HH:mm}"
+                : $"创建 {first:MM-dd HH:mm} · 更新 {last:MM-dd HH:mm}";
+        }
+    }
+
+    /// <summary>是否为线程根邮件（第 0 层）。</summary>
+    public bool IsRoot => Depth == 0;
+
+    /// <summary>邮件节点默认收起（显示树结构但不展开邮件细节）。</summary>
+    public bool ExpandedByDefault => false;
+
+    /// <summary>工单状态（仅根邮件显示），非根返回空。</summary>
+    public string Status => IsRoot ? ThreadOwner.Status : "";
+
+    /// <summary>状态徽章颜色（仅根邮件）。</summary>
+    public Brush StatusBrush => IsRoot ? ThreadOwner.StatusBrush : Brushes.Transparent;
+
+    /// <summary>工单号前缀（仅根邮件）：如 [308843]。</summary>
+    public string TicketPrefix =>
+        IsRoot && !string.IsNullOrEmpty(ThreadOwner.TicketNumber) ? $"[{ThreadOwner.TicketNumber}]  " : "";
+
+    /// <summary>工单总结（仅根邮件）。</summary>
+    public string Summary => IsRoot ? ThreadOwner.Summary : "";
+
+    /// <summary>AI 总结前的分隔符（仅根邮件且有总结时显示）。</summary>
+    public string SummaryPrefix => IsRoot && !string.IsNullOrEmpty(ThreadOwner.Summary) ? " · " : "";
+
+    /// <summary>是否有总结需要展示（根邮件且非空）。</summary>
+    public bool HasSummary => IsRoot && !string.IsNullOrEmpty(ThreadOwner.Summary);
     public string Meta =>
         $"发件人：{Sender}\n" +
         $"收件人：{Email.ToAddresses}\n" +
@@ -74,4 +113,15 @@ public class EmailNodeViewModel
         $"时间：{Email.DateSent:yyyy-MM-dd HH:mm}\n" +
         $"原标题：{Email.Subject}";
     public string Body => Email.BodyText;
+
+    /// <summary>线程状态等变化后刷新本节点（根邮件）的状态/总结显示，不重建树。</summary>
+    public void RefreshThreadInfo()
+    {
+        OnPropertyChanged(nameof(Status));
+        OnPropertyChanged(nameof(StatusBrush));
+        OnPropertyChanged(nameof(TicketPrefix));
+        OnPropertyChanged(nameof(Summary));
+        OnPropertyChanged(nameof(HasSummary));
+        OnPropertyChanged(nameof(SummaryPrefix));
+    }
 }

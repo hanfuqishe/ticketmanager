@@ -2,7 +2,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 
-// 生成多尺寸 .ico：蓝色渐变圆角底 + 白色票券 + 绿色对勾 + 票根条纹
+// 生成多尺寸 .ico：红色渐变圆角底 + 白色票券 + 绿色对勾 + 票根条纹
 const string outPath = @"C:/msys64/home/hanfu/ticketmanager/src/TicketManager/TicketManager.ico";
 var sizes = new[] { 16, 24, 32, 48, 64, 128, 256 };
 
@@ -69,8 +69,8 @@ static Bitmap DrawIcon(int s)
     float k = s / 256f;
     var r = new Rectangle(0, 0, s, s);
 
-    // 蓝色渐变圆角底
-    using var bg = new LinearGradientBrush(r, Color.FromArgb(37, 99, 235), Color.FromArgb(30, 64, 175), 90f);
+    // 红色渐变圆角底
+    using var bg = new LinearGradientBrush(r, Color.FromArgb(220, 38, 38), Color.FromArgb(185, 28, 28), 90f);
     using (var bgPath = RoundedRect(r, (int)(56 * k)))
         g.FillPath(bg, bgPath);
 
@@ -81,7 +81,7 @@ static Bitmap DrawIcon(int s)
         g.FillPath(white, tkPath);
 
     // 穿孔虚线
-    using (var dash = new Pen(Color.FromArgb(37, 99, 235), Math.Max(1f, 3f * k)) { DashStyle = DashStyle.Dash })
+    using (var dash = new Pen(Color.FromArgb(220, 38, 38), Math.Max(1f, 3f * k)) { DashStyle = DashStyle.Dash })
         g.DrawLine(dash, s / 2f, tk.Top + 18 * k, s / 2f, tk.Bottom - 18 * k);
 
     // 绿色对勾
@@ -95,7 +95,7 @@ static Bitmap DrawIcon(int s)
         });
 
     // 票根条纹
-    using (var stub = new Pen(Color.FromArgb(37, 99, 235), Math.Max(1f, 3f * k)))
+    using (var stub = new Pen(Color.FromArgb(220, 38, 38), Math.Max(1f, 3f * k)))
         for (int i = 0; i < 4; i++)
             g.DrawLine(stub, s / 2f + 20 * k, tk.Top + 30 * k + i * 20 * k, s - 52 * k, tk.Top + 30 * k + i * 20 * k);
 

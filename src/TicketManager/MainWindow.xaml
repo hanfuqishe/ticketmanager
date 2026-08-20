@@ -5,6 +5,11 @@
         Title="工单邮件管理器" Height="780" Width="1240"
         Icon="pack://application:,,,/TicketManager.ico"
         WindowStartupLocation="CenterScreen" FontFamily="Microsoft YaHei UI" FontSize="13">
+    <Window.InputBindings>
+        <KeyBinding Key="S" Modifiers="Control" Command="{Binding SyncCommand}"/>
+        <KeyBinding Key="OemComma" Modifiers="Control" Command="{Binding OpenSettingsCommand}"/>
+        <KeyBinding Key="Delete" Modifiers="Control+Shift" Command="{Binding ClearDataCommand}"/>
+    </Window.InputBindings>
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
 
@@ -41,7 +46,8 @@
 
         <!-- 树形缩进虚线：每个层级左侧绘制一条贯穿该节点及子树的纵向虚线 -->
         <Style x:Key="TreeViewItemGuideStyle" TargetType="TreeViewItem">
-            <Setter Property="IsExpanded" Value="True"/>
+            <Setter Property="IsExpanded" Value="{Binding ExpandedByDefault}"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TreeViewItem">
@@ -97,14 +103,29 @@
                             <Trigger Property="IsSelected" Value="True">
                                 <Setter TargetName="RowBg" Property="Background" Value="#D6E8F7"/>
                             </Trigger>
-                            <MultiTrigger>
-                                <MultiTrigger.Conditions>
-                                    <Condition Property="HasItems" Value="False"/>
-                                    <Condition Property="IsExpanded" Value="True"/>
-                                </MultiTrigger.Conditions>
+                            <Trigger Property="HasItems" Value="False">
                                 <Setter TargetName="Expander" Property="Visibility" Value="Hidden"/>
-                            </MultiTrigger>
+                            </Trigger>
                         </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 只读正文框：凹陷 3D 边框 + 淡灰背景（表明不可编辑） -->
+        <Style x:Key="SunkenTextBox" TargetType="TextBox">
+            <Setter Property="Background" Value="#F6F6F6"/>
+            <Setter Property="Foreground" Value="#222"/>
+            <Setter Property="Padding" Value="6"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="#8E8E8E"
+                                BorderThickness="1" SnapsToDevicePixels="True">
+                            <Border BorderBrush="#FFFFFF" BorderThickness="1">
+                                <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"/>
+                            </Border>
+                        </Border>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -126,97 +147,150 @@
             </StackPanel>
         </HierarchicalDataTemplate>
 
-        <HierarchicalDataTemplate DataType="{x:Type vm:ThreadViewModel}" ItemsSource="{Binding Children}">
-            <StackPanel Orientation="Horizontal">
-                <Border Background="{Binding StatusBrush}" CornerRadius="3" Padding="5,1" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding Status}" Foreground="White" FontSize="11"/>
-                </Border>
-                <TextBlock Text="{Binding Header}" VerticalAlignment="Center" Margin="8,0,0,0"
-                           TextTrimming="CharacterEllipsis" MaxWidth="280"/>
-                <TextBlock Text="{Binding Summary}" Foreground="Gray" FontSize="11" VerticalAlignment="Center"
-                           Margin="10,0,0,0" TextTrimming="CharacterEllipsis" MaxWidth="260"/>
-            </StackPanel>
-        </HierarchicalDataTemplate>
-
         <HierarchicalDataTemplate DataType="{x:Type vm:EmailNodeViewModel}" ItemsSource="{Binding Children}">
-            <StackPanel Margin="2,1">
-                <TextBlock TextWrapping="NoWrap">
-                    <Run Text="{Binding Badge, Mode=OneWay}" Foreground="#2b7de9" FontWeight="Bold"/>
-                    <Run Text="{Binding Title, Mode=OneWay}" Foreground="#202020"/>
-                </TextBlock>
+            <StackPanel Margin="2,1" ContextMenuService.IsEnabled="{Binding IsRoot}">
+                <StackPanel.ContextMenu>
+                    <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
+                                 Opened="ContextMenu_Opened">
+                        <MenuItem Header="设置状态">
+                            <MenuItem Header="已解决" Tag="{Binding}" Click="SetStatus_Click"/>
+                            <MenuItem Header="已关闭" Tag="{Binding}" Click="SetStatus_Click"/>
+                            <MenuItem Header="处理中" Tag="{Binding}" Click="SetStatus_Click"/>
+                            <MenuItem Header="等待客户回复" Tag="{Binding}" Click="SetStatus_Click"/>
+                            <MenuItem Header="等待客服回复" Tag="{Binding}" Click="SetStatus_Click"/>
+                            <MenuItem Header="纳入开发计划" Tag="{Binding}" Click="SetStatus_Click"/>
+                            <MenuItem Header="合并或拆分为其他工单" Tag="{Binding}" Click="SetStatus_Click"/>
+                            <MenuItem Header="新建" Tag="{Binding}" Click="SetStatus_Click"/>
+                            <Separator/>
+                            <MenuItem Header="恢复 AI 总结" Tag="{Binding}" Click="RegenerateStatus_Click"/>
+                        </MenuItem>
+                        <Separator/>
+                        <MenuItem Header="设置产品" Tag="{Binding}"/>
+                        <MenuItem Header="设置客户" Tag="{Binding}"/>
+                        <Separator/>
+                        <MenuItem Header="清空产品/客户" Tag="{Binding}" Click="ClearMeta_Click"/>
+                    </ContextMenu>
+                </StackPanel.ContextMenu>
+                <!-- 行1：状态徽章（仅根邮件）+ 标题，AI 总结内联跟在主标题后 -->
+                <StackPanel Orientation="Horizontal">
+                    <Border Background="{Binding StatusBrush}" CornerRadius="3" Padding="4,1" VerticalAlignment="Center"
+                            Visibility="{Binding IsRoot, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="{Binding Status}" Foreground="White" FontSize="11"/>
+                    </Border>
+                    <TextBlock TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Margin="4,0,0,0">
+                        <Run Text="{Binding Badge, Mode=OneWay}" Foreground="#2b7de9" FontWeight="Bold"/>
+                        <Run Text="{Binding Title, Mode=OneWay}" Foreground="#202020"/>
+                        <Run Text="{Binding SummaryPrefix, Mode=OneWay}" Foreground="#E8590C"/>
+                        <Run Text="{Binding Summary, Mode=OneWay}" Foreground="#E8590C"/>
+                    </TextBlock>
+                </StackPanel>
+                <!-- 行2：工单号（仅根邮件） 发件人 · 时间 -->
                 <StackPanel Orientation="Horizontal" Margin="0,1,0,0">
-                    <TextBlock Text="{Binding Sender, Mode=OneWay}" FontSize="11"
-                               Foreground="{Binding SenderBrush}"/>
+                    <TextBlock Text="{Binding TicketPrefix, Mode=OneWay}" FontSize="11" Foreground="#1f3a5f" FontWeight="SemiBold"
+                               Visibility="{Binding IsRoot, Converter={StaticResource BoolToVis}}"/>
+                    <TextBlock Text="{Binding Sender, Mode=OneWay}" FontSize="11" Foreground="{Binding SenderBrush}"/>
                     <TextBlock Text="·" FontSize="11" Foreground="Gray" Margin="4,0"/>
                     <TextBlock Text="{Binding Time, Mode=OneWay}" FontSize="11" Foreground="Gray"/>
                 </StackPanel>
+                <!-- 行间虚线分隔 -->
+                <Rectangle Height="1" Stroke="#D0D0D0" StrokeThickness="1" StrokeDashArray="2 2" Margin="0,2,0,0"/>
             </StackPanel>
         </HierarchicalDataTemplate>
     </Window.Resources>
 
     <DockPanel>
-        <!-- 顶部工具栏 -->
-        <Border DockPanel.Dock="Top" Background="#f3f3f3" BorderBrush="#dddddd" BorderThickness="0,0,0,1" Padding="10,8">
-            <StackPanel Orientation="Horizontal">
-                <Button Content="⟳ 同步" Command="{Binding SyncCommand}" Padding="14,5" FontSize="13"/>
-                <Button Content="⚙ 设置" Command="{Binding OpenSettingsCommand}" Padding="14,5" FontSize="13" Margin="10,0,0,0"/>
-                <Button Content="🗑 清空数据" Command="{Binding ClearDataCommand}" Padding="14,5" FontSize="13" Margin="10,0,0,0" Foreground="#c0392b"/>
-                <ComboBox ItemsSource="{Binding SortOptions}" DisplayMemberPath="Label" SelectedItem="{Binding SelectedSort}"
-                          Width="150" Margin="10,0,0,0" VerticalAlignment="Center"/>
-                <ProgressBar Width="180" Height="6" Margin="18,0,0,0" VerticalAlignment="Center"
-                             IsIndeterminate="{Binding IsBusy}" Visibility="{Binding BusyVisibility}"/>
-                <TextBlock Text="{Binding StatusText}" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="#444"/>
-            </StackPanel>
-        </Border>
+        <!-- 主菜单 -->
+        <Menu DockPanel.Dock="Top">
+            <MenuItem Header="文件(_F)">
+                <MenuItem Header="同步邮件(_S)" Command="{Binding SyncCommand}" InputGestureText="Ctrl+S"/>
+                <Separator/>
+                <MenuItem Header="清空本地数据(_C)" Command="{Binding ClearDataCommand}" InputGestureText="Ctrl+Shift+Delete"/>
+                <Separator/>
+                <MenuItem Header="退出(_X)" Click="Exit_Click"/>
+            </MenuItem>
+            <MenuItem Header="设置(_S)">
+                <MenuItem Header="设置…(_O)" Command="{Binding OpenSettingsCommand}" InputGestureText="Ctrl+,"/>
+            </MenuItem>
+            <MenuItem Header="帮助(_H)">
+                <MenuItem Header="关于…(_A)" Click="About_Click"/>
+            </MenuItem>
+        </Menu>
 
         <!-- 底部状态栏 -->
         <StatusBar DockPanel.Dock="Bottom">
             <StatusBarItem>
-                <TextBlock Text="{Binding StatusText}"/>
+                <StackPanel Orientation="Horizontal">
+                    <ProgressBar Width="90" Height="6" VerticalAlignment="Center" Margin="0,0,8,0"
+                                 IsIndeterminate="{Binding IsBusy}" Visibility="{Binding BusyVisibility}"/>
+                    <TextBlock Text="{Binding StatusText}"/>
+                </StackPanel>
             </StatusBarItem>
             <StatusBarItem HorizontalAlignment="Right">
                 <TextBlock Text="{Binding DbPath}" Foreground="Gray" FontSize="11"/>
             </StatusBarItem>
         </StatusBar>
 
-        <!-- 主体：左树右详情 -->
+        <!-- 主体：左树右详情（分隔条位于右侧 1/3） -->
         <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="2*" MinWidth="380"/>
                 <ColumnDefinition Width="5"/>
-                <ColumnDefinition Width="3*" MinWidth="380"/>
+                <ColumnDefinition Width="1*" MinWidth="380"/>
             </Grid.ColumnDefinitions>
 
-            <TreeView Grid.Column="0" ItemsSource="{Binding Customers}"
-                      ItemContainerStyle="{StaticResource TreeViewItemGuideStyle}"
-                      SelectedItemChanged="TreeView_SelectedItemChanged"
-                      BorderThickness="0,0,1,0" BorderBrush="#e0e0e0">
-            </TreeView>
+            <DockPanel Grid.Column="0">
+                <!-- 检索栏：按线索根邮件主题检索 -->
+                <Border DockPanel.Dock="Top" Padding="8,6" Background="#fafafa" BorderBrush="#e0e0e0" BorderThickness="0,0,1,1">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="🔍" VerticalAlignment="Center"/>
+                        <TextBox Width="190" Margin="6,0,0,0" Padding="4" VerticalAlignment="Center"
+                                 Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="按线索根邮件主题检索，留空显示全部"/>
+                        <Button Content="✕" Width="24" Padding="0" Margin="4,0,0,0"
+                                VerticalAlignment="Center" ToolTip="清除检索" Click="ClearSearch_Click"/>
+                    </StackPanel>
+                </Border>
+                <TreeView x:Name="TreeView" ItemsSource="{Binding Customers}"
+                          ItemContainerStyle="{StaticResource TreeViewItemGuideStyle}"
+                          SelectedItemChanged="TreeView_SelectedItemChanged"
+                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                          BorderThickness="0" BorderBrush="#e0e0e0">
+                </TreeView>
+            </DockPanel>
 
             <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" Background="#e8e8e8"/>
 
-            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
-                <StackPanel Margin="14">
-                    <!-- 工单智能总结 -->
-                    <Border Background="#f7f9fc" BorderBrush="#dde6f0" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
-                        <StackPanel>
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="📋 " FontSize="14"/>
-                                <TextBlock Text="{Binding SelectedThreadHeader}" FontSize="15" FontWeight="Bold" Foreground="#1f3a5f"/>
-                            </StackPanel>
-                            <TextBlock Text="{Binding SelectedThreadSummary}" TextWrapping="Wrap" Margin="2,8,0,0" Foreground="#333"/>
-                        </StackPanel>
-                    </Border>
+            <Grid Grid.Column="2" Margin="14">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*" MinHeight="140"/>
+                </Grid.RowDefinitions>
 
-                    <!-- 邮件详情 -->
-                    <TextBlock Text="{Binding SelectedEmailTitle}" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap"/>
-                    <TextBlock Text="{Binding SelectedEmailMeta}" Foreground="Gray" FontSize="12" Margin="0,4,0,8"
-                               TextWrapping="Wrap"/>
-                    <TextBox Text="{Binding SelectedEmailBody, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap"
-                             VerticalScrollBarVisibility="Auto" AcceptsReturn="True" Height="400"
-                             FontFamily="Microsoft YaHei UI" FontSize="12" Padding="6" BorderBrush="#ddd"/>
-                </StackPanel>
-            </ScrollViewer>
+                <!-- 工单智能总结 -->
+                <Border Grid.Row="0" Background="{Binding SelectedSummaryBackground}" BorderBrush="{Binding SelectedSummaryBorder}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="📋 " FontSize="14"/>
+                            <TextBlock Text="{Binding SelectedThreadHeader}" FontSize="15" FontWeight="Bold" Foreground="#1f3a5f"/>
+                        </StackPanel>
+                        <TextBlock Text="{Binding SelectedThreadSummary}" TextWrapping="Wrap" Margin="2,8,0,0" Foreground="#333"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- 邮件详情 -->
+                <TextBox Grid.Row="1" Text="{Binding SelectedEmailTitle, Mode=OneWay}" FontSize="14" FontWeight="SemiBold"
+                         TextWrapping="Wrap" IsReadOnly="True" BorderThickness="0" Background="Transparent"
+                         Padding="0" IsTabStop="False"/>
+                <TextBlock Grid.Row="2" Text="{Binding SelectedEmailMeta}" Foreground="Gray" FontSize="12" Margin="0,4,0,8"
+                           TextWrapping="Wrap"/>
+                <!-- 正文：凹陷 3D + 淡灰只读背景，随窗口缩放占满剩余空间 -->
+                <TextBox Grid.Row="3" Text="{Binding SelectedEmailBody, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap"
+                         VerticalScrollBarVisibility="Auto" AcceptsReturn="True"
+                         FontFamily="Microsoft YaHei UI" FontSize="12"
+                         Style="{StaticResource SunkenTextBox}"/>
+            </Grid>
         </Grid>
     </DockPanel>
 </Window>

@@ -62,6 +62,7 @@ public class DatabaseService : IDisposable
                 DateReceived TEXT NOT NULL DEFAULT '',
                 BodyText TEXT NOT NULL DEFAULT '',
                 ContentHash TEXT NOT NULL DEFAULT '',
+                Translation TEXT NOT NULL DEFAULT '',
                 ThreadId INTEGER NOT NULL DEFAULT 0,
                 TicketNumber TEXT NOT NULL DEFAULT '',
                 Product TEXT NOT NULL DEFAULT '',
@@ -83,13 +84,15 @@ public class DatabaseService : IDisposable
             );
             """);
 
-        // ---- 迁移：给旧库补 Zoho REST 列（CREATE TABLE IF NOT EXISTS 不会改已存在的表）----
+        // ---- 迁移：给旧库补 Zoho REST / 翻译 列（CREATE TABLE IF NOT EXISTS 不会改已存在的表）----
         var emailCols = new HashSet<string>(conn.Query<string>(
             "SELECT name FROM pragma_table_info('Emails')"));
         if (!emailCols.Contains("ZohoMessageId"))
             conn.Execute("ALTER TABLE Emails ADD COLUMN ZohoMessageId TEXT NOT NULL DEFAULT ''");
         if (!emailCols.Contains("ZohoThreadId"))
             conn.Execute("ALTER TABLE Emails ADD COLUMN ZohoThreadId INTEGER NOT NULL DEFAULT 0");
+        if (!emailCols.Contains("Translation"))
+            conn.Execute("ALTER TABLE Emails ADD COLUMN Translation TEXT NOT NULL DEFAULT ''");
     }
 
     // ================= Settings =================
@@ -224,6 +227,20 @@ public class DatabaseService : IDisposable
         conn.Execute("UPDATE Emails SET AiTitle = @title WHERE Id = @id", new { id, title });
     }
 
+    /// <summary>读取某封邮件的 AI 翻译缓存（未翻译过返回空串）。</summary>
+    public string GetEmailTranslation(long id)
+    {
+        using var conn = Open();
+        return conn.ExecuteScalar<string>("SELECT Translation FROM Emails WHERE Id = @id", new { id }) ?? "";
+    }
+
+    /// <summary>保存某封邮件的 AI 翻译结果（持久化缓存，下次加载直接读库）。</summary>
+    public void SetEmailTranslation(long id, string text)
+    {
+        using var conn = Open();
+        conn.Execute("UPDATE Emails SET Translation = @text WHERE Id = @id", new { id, text });
+    }
+
     /// <summary>回写主题解析出的 工单号/产品/客户/故障 字段。</summary>
     public void UpdateEmailMeta(long id, ParsedSubject p)
     {
@@ -270,6 +287,18 @@ public class DatabaseService : IDisposable
         if (tid > 0)
             conn.Execute("UPDATE Emails SET Product=@product, Enterprise=@enterprise WHERE ThreadId=@tid AND Id<>@emailId",
                 new { product, enterprise, tid, emailId }, tx);
+        tx.Commit();
+    }
+
+    /// <summary>按线程批量设置 产品/客户（只覆盖非空字段，空字段保持原值）。</summary>
+    public void SetThreadMeta(long threadId, string? product, string? enterprise)
+    {
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+        if (!string.IsNullOrEmpty(product))
+            conn.Execute("UPDATE Emails SET Product=@product WHERE ThreadId=@tid", new { product, tid = threadId }, tx);
+        if (!string.IsNullOrEmpty(enterprise))
+            conn.Execute("UPDATE Emails SET Enterprise=@enterprise WHERE ThreadId=@tid", new { enterprise, tid = threadId }, tx);
         tx.Commit();
     }
 

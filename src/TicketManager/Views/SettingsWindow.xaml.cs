@@ -14,7 +14,6 @@ public partial class SettingsWindow : Window
         InitializeComponent();
         _vm = new SettingsViewModel(workflow);
         DataContext = _vm;
-        ImapPasswordBox.Password = _vm.Config.ImapPassword;
         DeepSeekKeyBox.Password = _vm.Config.DeepSeekApiKey;
         ZohoClientIdBox.Password = _vm.Config.ZohoClientId;
         ZohoClientSecretBox.Password = _vm.Config.ZohoClientSecret;
@@ -23,7 +22,6 @@ public partial class SettingsWindow : Window
 
     private void Save_Click(object sender, RoutedEventArgs e)
     {
-        _vm.Config.ImapPassword = ImapPasswordBox.Password;
         _vm.Config.DeepSeekApiKey = DeepSeekKeyBox.Password;
         _vm.Config.ZohoClientId = ZohoClientIdBox.Password;
         _vm.Config.ZohoClientSecret = ZohoClientSecretBox.Password;

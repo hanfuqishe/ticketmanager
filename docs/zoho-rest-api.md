@@ -1,6 +1,5 @@
 # Zoho Mail REST API 迁移
 
-IMAP 访问被 Zoho 封锁后，改为使用 Zoho Mail REST API 拉取邮件。
 
 ## 一、OAuth 2.0 凭据准备（你需要在 Zoho 控制台操作一次）
 

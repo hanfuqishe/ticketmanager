@@ -160,6 +160,17 @@ public class DeepSeekService : IDisposable
         return (SubjectParser.NormalizeProduct(product), enterprise);
     }
 
+    /// <summary>把英文邮件正文翻译成简体中文。失败返回 null。</summary>
+    public async Task<string?> TranslateTextAsync(string text)
+    {
+        if (!Configured || string.IsNullOrWhiteSpace(text)) return null;
+        const string systemPrompt =
+            "你是一名专业的中英技术翻译。请把下面的英文邮件正文翻译成简体中文。" +
+            "保留原文的分段与换行结构，不要添加任何解释、前缀或标注。只输出译文。";
+        var userContent = Truncate(text, _config.MaxBodyChars);
+        return await ChatAsync(systemPrompt, userContent, maxTokens: 1024);
+    }
+
     private async Task<string?> ChatAsync(string systemPrompt, string userContent, int maxTokens)
     {
         if (!Configured) return null;

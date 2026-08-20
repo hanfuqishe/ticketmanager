@@ -85,6 +85,14 @@ public class EmailNodeViewModel : ViewModelBase
     /// <summary>是否为线程根邮件（第 0 层）。</summary>
     public bool IsRoot => Depth == 0;
 
+    private bool _isMultiSelected;
+    /// <summary>是否被 Ctrl/Shift 多选（仅根线索高亮）。</summary>
+    public bool IsMultiSelected
+    {
+        get => _isMultiSelected;
+        set => Set(ref _isMultiSelected, value);
+    }
+
     /// <summary>邮件节点默认收起（显示树结构但不展开邮件细节）。</summary>
     public bool ExpandedByDefault => false;
 
@@ -93,6 +101,9 @@ public class EmailNodeViewModel : ViewModelBase
 
     /// <summary>状态徽章颜色（仅根邮件）。</summary>
     public Brush StatusBrush => IsRoot ? ThreadOwner.StatusBrush : Brushes.Transparent;
+
+    /// <summary>AI 总结文字颜色：与线索状态色对齐（仅根邮件）。</summary>
+    public Brush SummaryBrush => IsRoot ? ThreadOwner.StatusBrush : Brushes.Transparent;
 
     /// <summary>工单号前缀（仅根邮件）：如 [308843]。</summary>
     public string TicketPrefix =>
@@ -119,6 +130,7 @@ public class EmailNodeViewModel : ViewModelBase
     {
         OnPropertyChanged(nameof(Status));
         OnPropertyChanged(nameof(StatusBrush));
+        OnPropertyChanged(nameof(SummaryBrush));
         OnPropertyChanged(nameof(TicketPrefix));
         OnPropertyChanged(nameof(Summary));
         OnPropertyChanged(nameof(HasSummary));

@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using TicketManager.Models;
 
 namespace TicketManager.Services;
@@ -58,7 +59,29 @@ public class ThreadBuilder
                 ticketOf[e.Id] = t;
         }
 
-        // 第三步：按工单号分组
+        // 第三步：自动回复正文登记的原报障主题 → 关联无工单号的报障邮件。
+        // Zoho 自动回复（“我们已收到您的工单”）正文含 “我们已经为您登记了工单：”原主题“， ID为[工单号]”；
+        // 报障邮件（发件箱）主题与该原主题一致但无工单号，据此把报障邮件并入自动回复所在工单。
+        var autoReplyTickets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); // 归一化主题 -> 工单号
+        foreach (var e in allEmails)
+        {
+            if (string.IsNullOrEmpty(ticketOf[e.Id])) continue;
+            if (string.IsNullOrEmpty(e.BodyText)) continue;
+            var reported = ExtractReportedSubject(e.BodyText);
+            if (string.IsNullOrEmpty(reported)) continue;
+            autoReplyTickets[NormalizeSubject(reported)] = ticketOf[e.Id];
+        }
+        if (autoReplyTickets.Count > 0)
+        {
+            foreach (var e in allEmails)
+            {
+                if (!string.IsNullOrEmpty(ticketOf[e.Id])) continue;
+                if (autoReplyTickets.TryGetValue(NormalizeSubject(e.Subject), out var t))
+                    ticketOf[e.Id] = t;
+            }
+        }
+
+        // 第四步：按工单号分组
         var groups = new Dictionary<string, List<EmailMessage>>(StringComparer.OrdinalIgnoreCase);
         foreach (var e in allEmails)
         {
@@ -281,6 +304,22 @@ public class ThreadBuilder
 
     private static IEnumerable<string> SplitRefs(string references) =>
         references.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    /// <summary>从 Zoho 自动回复正文提取“登记工单”的原报障主题（中文引号）；无则返回空串。</summary>
+    private static string ExtractReportedSubject(string body)
+    {
+        var m = Regex.Match(body, @"工单[:：]\s*“(?<s>[^”]+)”");
+        return m.Success ? m.Groups["s"].Value.Trim() : "";
+    }
+
+    /// <summary>主题归一化（HTML 实体解码、压缩空白、去 Re:/回复: 前缀），用于主题匹配。</summary>
+    private static string NormalizeSubject(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        s = System.Net.WebUtility.HtmlDecode(s);
+        s = Regex.Replace(s, @"^\s*(?:re|回复|答复|fwd|转发)\s*[:：]\s*", "", RegexOptions.IgnoreCase);
+        return Regex.Replace(s, @"\s+", " ").Trim();
+    }
 
     private static string Majority(List<EmailMessage> emails, Func<EmailMessage, string> selector)
         => emails.Where(e => !string.IsNullOrEmpty(selector(e)))

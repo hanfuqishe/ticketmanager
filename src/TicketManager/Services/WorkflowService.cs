@@ -648,6 +648,16 @@ public class WorkflowService
     public List<string> GetKnownProducts() => _db.GetKnownProducts();
     public List<string> GetKnownEnterprises() => _db.GetKnownEnterprises();
 
+    /// <summary>读取某封邮件的 AI 翻译缓存（持久化到数据库，未翻译过返回空串）。</summary>
+    public string GetEmailTranslation(long id) => _db.GetEmailTranslation(id);
+
+    /// <summary>保存某封邮件的 AI 翻译结果到数据库（下次加载直接读库，不重复调用 AI）。</summary>
+    public void SetEmailTranslation(long id, string text) => _db.SetEmailTranslation(id, text);
+
+    /// <summary>按线程批量设置 产品/客户（只覆盖非空字段）。</summary>
+    public void SetThreadMeta(long threadId, string product, string enterprise)
+        => _db.SetThreadMeta(threadId, product, enterprise);
+
     /// <summary>手工指定某封邮件及其同线程其他邮件（其余只填空缺）的 产品/客户，使整棵线程归位。</summary>
     public void SetEmailMeta(long id, string product, string enterprise)
     {

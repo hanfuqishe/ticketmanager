@@ -103,6 +103,10 @@
                             <Trigger Property="IsSelected" Value="True">
                                 <Setter TargetName="RowBg" Property="Background" Value="#D6E8F7"/>
                             </Trigger>
+                            <!-- Ctrl/Shift 多选：根线索高亮为深蓝 -->
+                            <DataTrigger Binding="{Binding IsMultiSelected}" Value="True">
+                                <Setter TargetName="RowBg" Property="Background" Value="#B3D4FC"/>
+                            </DataTrigger>
                             <Trigger Property="HasItems" Value="False">
                                 <Setter TargetName="Expander" Property="Visibility" Value="Hidden"/>
                             </Trigger>
@@ -148,8 +152,9 @@
         </HierarchicalDataTemplate>
 
         <HierarchicalDataTemplate DataType="{x:Type vm:EmailNodeViewModel}" ItemsSource="{Binding Children}">
-            <StackPanel Margin="2,1" ContextMenuService.IsEnabled="{Binding IsRoot}">
-                <StackPanel.ContextMenu>
+            <!-- Grid 铺满整行，右键在行内任意位置（含文字右侧空白）都可弹出菜单 -->
+            <Grid Margin="2,1" Background="Transparent" ContextMenuService.IsEnabled="{Binding IsRoot}">
+                <Grid.ContextMenu>
                     <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
                                  Opened="ContextMenu_Opened">
                         <MenuItem Header="设置状态">
@@ -170,31 +175,33 @@
                         <Separator/>
                         <MenuItem Header="清空产品/客户" Tag="{Binding}" Click="ClearMeta_Click"/>
                     </ContextMenu>
-                </StackPanel.ContextMenu>
-                <!-- 行1：状态徽章（仅根邮件）+ 标题，AI 总结内联跟在主标题后 -->
-                <StackPanel Orientation="Horizontal">
-                    <Border Background="{Binding StatusBrush}" CornerRadius="3" Padding="4,1" VerticalAlignment="Center"
-                            Visibility="{Binding IsRoot, Converter={StaticResource BoolToVis}}">
-                        <TextBlock Text="{Binding Status}" Foreground="White" FontSize="11"/>
-                    </Border>
-                    <TextBlock TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Margin="4,0,0,0">
-                        <Run Text="{Binding Badge, Mode=OneWay}" Foreground="#2b7de9" FontWeight="Bold"/>
-                        <Run Text="{Binding Title, Mode=OneWay}" Foreground="#202020"/>
-                        <Run Text="{Binding SummaryPrefix, Mode=OneWay}" Foreground="#E8590C"/>
-                        <Run Text="{Binding Summary, Mode=OneWay}" Foreground="#E8590C"/>
-                    </TextBlock>
+                </Grid.ContextMenu>
+                <StackPanel>
+                    <!-- 行1：状态徽章（仅根邮件）+ 标题，AI 总结内联跟在主标题后 -->
+                    <StackPanel Orientation="Horizontal">
+                        <Border Background="{Binding StatusBrush}" CornerRadius="3" Padding="4,1" VerticalAlignment="Center"
+                                Visibility="{Binding IsRoot, Converter={StaticResource BoolToVis}}">
+                            <TextBlock Text="{Binding Status}" Foreground="White" FontSize="11"/>
+                        </Border>
+                        <TextBlock TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Margin="4,0,0,0">
+                            <Run Text="{Binding Badge, Mode=OneWay}" Foreground="#2b7de9" FontWeight="Bold"/>
+                            <Run Text="{Binding Title, Mode=OneWay}" Foreground="#202020"/>
+                            <Run Text="{Binding SummaryPrefix, Mode=OneWay}" Foreground="{Binding SummaryBrush}" FontWeight="SemiBold"/>
+                            <Run Text="{Binding Summary, Mode=OneWay}" Foreground="{Binding SummaryBrush}"/>
+                        </TextBlock>
+                    </StackPanel>
+                    <!-- 行2：工单号（仅根邮件） 发件人 · 时间 -->
+                    <StackPanel Orientation="Horizontal" Margin="0,1,0,0">
+                        <TextBlock Text="{Binding TicketPrefix, Mode=OneWay}" FontSize="11" Foreground="#1f3a5f" FontWeight="SemiBold"
+                                   Visibility="{Binding IsRoot, Converter={StaticResource BoolToVis}}"/>
+                        <TextBlock Text="{Binding Sender, Mode=OneWay}" FontSize="11" Foreground="{Binding SenderBrush}"/>
+                        <TextBlock Text="·" FontSize="11" Foreground="Gray" Margin="4,0"/>
+                        <TextBlock Text="{Binding Time, Mode=OneWay}" FontSize="11" Foreground="Gray"/>
+                    </StackPanel>
+                    <!-- 行间虚线分隔 -->
+                    <Rectangle Height="1" Stroke="#D0D0D0" StrokeThickness="1" StrokeDashArray="2 2" Margin="0,2,0,0"/>
                 </StackPanel>
-                <!-- 行2：工单号（仅根邮件） 发件人 · 时间 -->
-                <StackPanel Orientation="Horizontal" Margin="0,1,0,0">
-                    <TextBlock Text="{Binding TicketPrefix, Mode=OneWay}" FontSize="11" Foreground="#1f3a5f" FontWeight="SemiBold"
-                               Visibility="{Binding IsRoot, Converter={StaticResource BoolToVis}}"/>
-                    <TextBlock Text="{Binding Sender, Mode=OneWay}" FontSize="11" Foreground="{Binding SenderBrush}"/>
-                    <TextBlock Text="·" FontSize="11" Foreground="Gray" Margin="4,0"/>
-                    <TextBlock Text="{Binding Time, Mode=OneWay}" FontSize="11" Foreground="Gray"/>
-                </StackPanel>
-                <!-- 行间虚线分隔 -->
-                <Rectangle Height="1" Stroke="#D0D0D0" StrokeThickness="1" StrokeDashArray="2 2" Margin="0,2,0,0"/>
-            </StackPanel>
+            </Grid>
         </HierarchicalDataTemplate>
     </Window.Resources>
 
@@ -221,8 +228,12 @@
         <StatusBar DockPanel.Dock="Bottom">
             <StatusBarItem>
                 <StackPanel Orientation="Horizontal">
-                    <ProgressBar Width="90" Height="6" VerticalAlignment="Center" Margin="0,0,8,0"
-                                 IsIndeterminate="{Binding IsBusy}" Visibility="{Binding BusyVisibility}"/>
+                    <ProgressBar Width="140" Height="8" VerticalAlignment="Center" Margin="0,0,6,0"
+                                 Minimum="0" Maximum="100" Value="{Binding ProgressValue}"
+                                 IsIndeterminate="{Binding ProgressIndeterminate}" Visibility="{Binding BusyVisibility}"/>
+                    <TextBlock Text="{Binding ProgressPercentText}" Foreground="#1f3a5f" FontWeight="SemiBold"
+                               FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
+                               Visibility="{Binding BusyVisibility}"/>
                     <TextBlock Text="{Binding StatusText}"/>
                 </StackPanel>
             </StatusBarItem>
@@ -261,37 +272,57 @@
 
             <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" Background="#e8e8e8"/>
 
-            <Grid Grid.Column="2" Margin="14">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*" MinHeight="140"/>
-                </Grid.RowDefinitions>
+            <DockPanel Grid.Column="2" Margin="14">
+                <!-- 按钮行：固定在底部，不随正文伸缩 -->
+                <Grid DockPanel.Dock="Bottom" Margin="0,4,0,0" Height="30">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Button x:Name="ExpandQuoteButton" Grid.Column="0" Content="展开引用" Click="ExpandQuote_Click"
+                            MinWidth="76" Padding="10,3" FontSize="11" VerticalAlignment="Center"
+                            Visibility="Collapsed" ToolTip="展开被引用的历史邮件"/>
+                    <Button Grid.Column="2" Content="{Binding TranslateButtonText}" Command="{Binding TranslateEmailCommand}"
+                            MinWidth="76" Padding="12,3" FontSize="11" VerticalAlignment="Center"
+                            HorizontalAlignment="Right" ToolTip="交给 AI 翻译邮件正文"/>
+                </Grid>
 
-                <!-- 工单智能总结 -->
-                <Border Grid.Row="0" Background="{Binding SelectedSummaryBackground}" BorderBrush="{Binding SelectedSummaryBorder}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
-                    <StackPanel>
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="📋 " FontSize="14"/>
-                            <TextBlock Text="{Binding SelectedThreadHeader}" FontSize="15" FontWeight="Bold" Foreground="#1f3a5f"/>
+                <!-- 内容区：总结 / 标题 / 元信息 / 正文 -->
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*" MinHeight="60"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- 工单智能总结 -->
+                    <Border Grid.Row="0" Background="{Binding SelectedSummaryBackground}" BorderBrush="{Binding SelectedSummaryBorder}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="📋 " FontSize="14"/>
+                                <TextBlock Text="{Binding SelectedThreadHeader}" FontSize="15" FontWeight="Bold" Foreground="#1f3a5f"/>
+                            </StackPanel>
+                            <TextBlock Text="{Binding SelectedThreadSummary}" TextWrapping="Wrap" Margin="2,8,0,0" Foreground="#333"/>
                         </StackPanel>
-                        <TextBlock Text="{Binding SelectedThreadSummary}" TextWrapping="Wrap" Margin="2,8,0,0" Foreground="#333"/>
-                    </StackPanel>
-                </Border>
+                    </Border>
 
-                <!-- 邮件详情 -->
-                <TextBox Grid.Row="1" Text="{Binding SelectedEmailTitle, Mode=OneWay}" FontSize="14" FontWeight="SemiBold"
-                         TextWrapping="Wrap" IsReadOnly="True" BorderThickness="0" Background="Transparent"
-                         Padding="0" IsTabStop="False"/>
-                <TextBlock Grid.Row="2" Text="{Binding SelectedEmailMeta}" Foreground="Gray" FontSize="12" Margin="0,4,0,8"
-                           TextWrapping="Wrap"/>
-                <!-- 正文：凹陷 3D + 淡灰只读背景，随窗口缩放占满剩余空间 -->
-                <TextBox Grid.Row="3" Text="{Binding SelectedEmailBody, Mode=OneWay}" IsReadOnly="True" TextWrapping="Wrap"
-                         VerticalScrollBarVisibility="Auto" AcceptsReturn="True"
-                         FontFamily="Microsoft YaHei UI" FontSize="12"
-                         Style="{StaticResource SunkenTextBox}"/>
-            </Grid>
+                    <!-- 邮件详情 -->
+                    <TextBox Grid.Row="1" Text="{Binding SelectedEmailTitle, Mode=OneWay}" FontSize="14" FontWeight="SemiBold"
+                             TextWrapping="Wrap" IsReadOnly="True" BorderThickness="0" Background="Transparent"
+                             Padding="0" IsTabStop="False"/>
+                    <!-- 邮件元信息 -->
+                    <TextBlock Grid.Row="2" Text="{Binding SelectedEmailMeta}" Foreground="Gray" FontSize="12"
+                               Margin="0,4,0,6" TextWrapping="Wrap"/>
+                    <!-- 正文：RichTextBox 支持 正文/引用 分色显示（引用部分灰色斜体 + 分隔线） -->
+                    <Border Grid.Row="3" BorderBrush="#c8c8c8" BorderThickness="1" Background="White" CornerRadius="3">
+                        <RichTextBox x:Name="EmailBodyBox" IsReadOnly="True" VerticalScrollBarVisibility="Auto"
+                                     FontFamily="Microsoft YaHei UI" FontSize="12"
+                                     BorderThickness="0" Padding="8" IsTabStop="False" Background="Transparent"/>
+                    </Border>
+                </Grid>
+            </DockPanel>
         </Grid>
     </DockPanel>
 </Window>

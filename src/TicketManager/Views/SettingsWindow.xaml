@@ -183,7 +183,8 @@
 
                     <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Margin="8,8">
                         <CheckBox Content="用于 IMAP 连接" IsChecked="{Binding Config.ProxyForImap}" Margin="0,0,20,0"/>
-                        <CheckBox Content="用于 DeepSeek 接口" IsChecked="{Binding Config.ProxyForDeepSeek}"/>
+                        <CheckBox Content="用于 DeepSeek 接口" IsChecked="{Binding Config.ProxyForDeepSeek}" Margin="0,0,20,0"/>
+                        <CheckBox Content="用于 Zoho REST API" IsChecked="{Binding Config.ProxyForZoho}"/>
                     </StackPanel>
                 </Grid>
             </TabItem>
@@ -197,6 +198,39 @@
                     </StackPanel>
                     <TextBlock Text="说明：邮件正文过长时将被截断后再发送给 DeepSeek，以避免超出上下文限制。" 
                                Foreground="#888" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                </StackPanel>
+            </TabItem>
+            <!-- ===== Zoho REST API ===== -->
+            <TabItem Header="Zoho REST API">
+                <StackPanel Margin="16">
+                    <StackPanel Orientation="Horizontal" Margin="0,6">
+                        <TextBlock Text="API 地址：" Width="110" VerticalAlignment="Center"/>
+                        <TextBox Text="{Binding Config.ZohoApiBase}" Width="280" Padding="4"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,6">
+                        <TextBlock Text="Client ID：" Width="110" VerticalAlignment="Center"/>
+                        <PasswordBox x:Name="ZohoClientIdBox" Width="280" Padding="4"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,6">
+                        <TextBlock Text="Client Secret：" Width="110" VerticalAlignment="Center"/>
+                        <PasswordBox x:Name="ZohoClientSecretBox" Width="280" Padding="4"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,6">
+                        <TextBlock Text="Refresh Token：" Width="110" VerticalAlignment="Center"/>
+                        <PasswordBox x:Name="ZohoRefreshTokenBox" Width="280" Padding="4"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,6">
+                        <TextBlock Text="Account ID：" Width="110" VerticalAlignment="Center"/>
+                        <TextBox Text="{Binding Config.ZohoAccountId}" Width="280" Padding="4"/>
+                        <TextBlock Text="留空自动获取" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="Gray" FontSize="11"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                        <Button Content="测试连接" Padding="16,4" Click="TestZoho_Click"/>
+                        <TextBlock x:Name="ZohoTestText" VerticalAlignment="Center" Margin="12,0,0,0"
+                                   TextWrapping="Wrap" MaxWidth="430" Foreground="#333"/>
+                    </StackPanel>
+                    <TextBlock Margin="0,14,0,0" Foreground="#888" FontSize="11" TextWrapping="Wrap"
+                               Text="需先在 Zoho API Console 创建 Self Client 并生成 Refresh Token（Scope：ZohoMail.accounts.READ,ZohoMail.folders.READ,ZohoMail.messages.READ，线程信息由 messages.READ 返回）。详细步骤见 docs/zoho-rest-api.md。这些凭据为敏感信息，将以系统加密方式存储。"/>
                 </StackPanel>
             </TabItem>
         </TabControl>

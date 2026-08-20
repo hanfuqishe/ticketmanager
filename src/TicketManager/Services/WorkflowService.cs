@@ -46,6 +46,13 @@ public class WorkflowService
             ProxyPort = IntOr(_db.GetSetting("proxy_port"), 1080),
             ProxyForImap = BoolOr(_db.GetSetting("proxy_imap"), true),
             ProxyForDeepSeek = BoolOr(_db.GetSetting("proxy_deepseek"), false),
+            ProxyForZoho = BoolOr(_db.GetSetting("proxy_zoho"), false),
+
+            ZohoApiBase = StrOr(_db.GetSetting("zoho_api_base"), "https://mail.zoho.com/api"),
+            ZohoClientId = _db.GetSetting("zoho_client_id"),
+            ZohoClientSecret = CredentialService.Unprotect(_db.GetSetting("zoho_client_secret")),
+            ZohoRefreshToken = CredentialService.Unprotect(_db.GetSetting("zoho_refresh_token")),
+            ZohoAccountId = _db.GetSetting("zoho_account_id"),
 
             FirstSyncDays = IntOr(_db.GetSetting("first_sync_days"), 7),
             MaxBodyChars = IntOr(_db.GetSetting("max_body_chars"), 6000),
@@ -56,8 +63,9 @@ public class WorkflowService
 
     public void SaveConfig(AppConfig c)
     {
-        // 记录旧的关注邮箱，用于判断是否变化（变化则重置同步游标，重拉时间窗口内符合新条件的邮件）
+        // 记录旧的关注邮箱/首次同步天数，用于判断是否变化
         var oldMonitored = _config.MonitoredAddresses;
+        var oldFirstSyncDays = _config.FirstSyncDays;
         _db.SetSetting("imap_host", c.ImapHost);
         _db.SetSetting("imap_port", c.ImapPort.ToString());
         _db.SetSetting("imap_ssl", c.ImapUseSsl.ToString());
@@ -81,6 +89,13 @@ public class WorkflowService
         _db.SetSetting("proxy_port", c.ProxyPort.ToString());
         _db.SetSetting("proxy_imap", c.ProxyForImap.ToString());
         _db.SetSetting("proxy_deepseek", c.ProxyForDeepSeek.ToString());
+        _db.SetSetting("proxy_zoho", c.ProxyForZoho.ToString());
+
+        _db.SetSetting("zoho_api_base", c.ZohoApiBase);
+        _db.SetSetting("zoho_client_id", c.ZohoClientId);
+        _db.SetSetting("zoho_client_secret", CredentialService.Protect(c.ZohoClientSecret));
+        _db.SetSetting("zoho_refresh_token", CredentialService.Protect(c.ZohoRefreshToken));
+        _db.SetSetting("zoho_account_id", c.ZohoAccountId);
 
         _db.SetSetting("first_sync_days", c.FirstSyncDays.ToString());
         _db.SetSetting("max_body_chars", c.MaxBodyChars.ToString());
@@ -88,6 +103,9 @@ public class WorkflowService
         _config = c;
         // 关注的客服邮箱发生变化（新增/删除）→ 重置同步游标，下次同步重新拉取时间窗口内的邮件
         if (!SameMonitoredSet(oldMonitored, c.MonitoredAddresses))
+            ResetSyncCursors();
+        // 首次同步天数 变大 → 重置游标，下次同步全量扫描拉取更大时间窗口（游标存在时增量模式不会重拉旧邮件）
+        if (c.FirstSyncDays > oldFirstSyncDays)
             ResetSyncCursors();
     }
 
@@ -120,24 +138,33 @@ public class WorkflowService
     {
         LoadConfig();
 
-        // 1. 同步（收件箱 + 发件箱；逐封拉取即落库 + 实时推进游标：网络中断时已同步的邮件不丢，重试从断点继续）
-        progress?.Report("正在连接邮箱…");
-        var imap = new ImapSyncService(_config);
+        // 1. 同步：优先 Zoho REST API（IMAP 被封锁后替代），否则退回 IMAP
+        bool useZoho = !string.IsNullOrEmpty(_config.ZohoClientId) &&
+                       !string.IsNullOrEmpty(_config.ZohoRefreshToken);
         int newCount = 0;
-        const int maxAttempts = 4; // 首次 + 最多 3 次自动重连重试
+        progress?.Report(useZoho ? "正在通过 Zoho REST API 同步…" : "正在连接邮箱…");
         try
         {
-            for (int attempt = 1; ; attempt++)
+            if (useZoho)
             {
-                try
+                newCount = await ZohoSyncAsync(progress, ct);
+            }
+            else
+            {
+                var imap = new ImapSyncService(_config);
+                const int maxAttempts = 4; // 首次 + 最多 3 次自动重连重试
+                for (int attempt = 1; ; attempt++)
                 {
-                    newCount = await SyncFoldersAsync(imap, progress, ct);
-                    break; // 同步成功
-                }
-                catch (Exception ex) when (IsRetryableNetworkError(ex) && attempt < maxAttempts)
-                {
-                    progress?.Report($"网络中断（{ex.Message}），正在自动重连重试（第 {attempt}/{maxAttempts - 1} 次）…");
-                    await Task.Delay(TimeSpan.FromSeconds(2 * attempt), ct); // 逐次延长等待
+                    try
+                    {
+                        newCount = await SyncFoldersAsync(imap, progress, ct);
+                        break; // 同步成功
+                    }
+                    catch (Exception ex) when (IsRetryableNetworkError(ex) && attempt < maxAttempts)
+                    {
+                        progress?.Report($"网络中断（{ex.Message}），正在自动重连重试（第 {attempt}/{maxAttempts - 1} 次）…");
+                        await Task.Delay(TimeSpan.FromSeconds(2 * attempt), ct); // 逐次延长等待
+                    }
                 }
             }
         }
@@ -147,22 +174,31 @@ public class WorkflowService
             RebuildThreads();
         }
 
-        // 3. 域名→企业 自动学习 + 映射补齐 + AI 分析（均只填空缺），再重建线程分组
-        progress?.Report("正在学习域名→企业映射…");
-        AutoLearnDomainMappings();
-        ApplyDomainMappings();
-        if (_config.EnableAiMeta)
-            await EnrichMissingMetaAsync(progress, ct);
-        RebuildThreads();
+        // 3-5. AI 阶段：仅当有新邮件时执行。无新邮件时跳过 AI 产品/客户分析与工单状态总结，
+        // 避免每 2 分钟轮询无新邮件时仍重复调用 AI（仅应用已有域名映射，开销极小）。
+        if (newCount > 0)
+        {
+            progress?.Report("正在学习域名→企业映射…");
+            AutoLearnDomainMappings();
+            ApplyDomainMappings();
+            if (_config.EnableAiMeta)
+                await EnrichMissingMetaAsync(progress, ct);
+            RebuildThreads();
 
-        // 4. AI 标题
-        if (_config.EnableAiTitle)
-            await GenerateTitlesAsync(progress, ct);
+            if (_config.EnableAiTitle)
+                await GenerateTitlesAsync(progress, ct);
 
-        // 5. AI 工单状态
-        if (_config.EnableAiStatus)
-            await GenerateStatusesAsync(progress, ct);
+            if (_config.EnableAiStatus)
+                await GenerateStatusesAsync(progress, ct);
+        }
+        else
+        {
+            // 无新邮件：仅应用已保存的 域名→企业 映射到已有邮件（不调用 AI）
+            ApplyDomainMappings();
+        }
 
+        // AI 整理完成后明确提示“同步完成”，避免状态栏停留在最后一条线索的整理进度上
+        progress?.Report($"同步完成（新增 {newCount} 封邮件）");
         return newCount;
     }
 
@@ -202,6 +238,120 @@ public class WorkflowService
         return newCount;
     }
 
+    // ================= Zoho REST 同步 =================
+
+    private async Task<int> ZohoSyncAsync(IProgress<string>? progress, CancellationToken ct)
+    {
+        var api = new ZohoMailApiService(_config);
+        var accountId = await api.GetAccountIdAsync(ct);
+        if (accountId == null)
+            throw new InvalidOperationException("无法获取 Zoho 账号，请检查 REST API 配置（Client ID/Secret/Refresh Token）。");
+        var folders = await api.GetFoldersAsync(accountId.Value, ct);
+        var inbox = folders.FirstOrDefault(f => f.Name.Equals("Inbox", StringComparison.OrdinalIgnoreCase));
+        var sent = folders.FirstOrDefault(f => f.Name.Equals("Sent", StringComparison.OrdinalIgnoreCase));
+        var toSync = new List<ZohoFolder>();
+        if (inbox != null) toSync.Add(inbox);
+        if (sent != null) toSync.Add(sent);
+        if (toSync.Count == 0)
+            throw new InvalidOperationException("未找到 Inbox / Sent 文件夹。");
+
+        int newCount = 0;
+        foreach (var folder in toSync)
+            newCount += await ZohoSyncFolderAsync(api, accountId.Value, folder, progress, ct);
+        return newCount;
+    }
+
+    /// <summary>同步单个文件夹：增量按 receivedTime 游标断点续传；全量(游标=0)扫描时间窗口并跳过已下载。
+    /// 两阶段：先扫描列表收集待下载邮件（报告扫描进度），再逐封下载内容（报告 已下载/总数 进度）。</summary>
+    private async Task<int> ZohoSyncFolderAsync(ZohoMailApiService api, long accountId, ZohoFolder folder,
+        IProgress<string>? progress, CancellationToken ct)
+    {
+        var cursor = _db.GetZohoCursor(folder.Name);
+        bool fullScan = cursor <= 0;
+        int newCount = 0;
+        int start = 1;
+        const int pageSize = 100;
+        long newestRecv = 0;
+        bool stop = false;
+        var label = FolderLabel(folder.Name);
+        var toDownload = new List<ZohoMessageSummary>();
+
+        // ---- 阶段 1：扫描列表，收集窗口内/游标后 且 未下载 的邮件 ----
+        int scanned = 0;
+        while (!stop)
+        {
+            ct.ThrowIfCancellationRequested();
+            progress?.Report($"正在扫描{label}列表… 已扫描 {scanned} 封");
+            var page = await api.ListMessagesAsync(accountId, folder.Id, start, pageSize, ct);
+            if (page.Count == 0) break;
+            foreach (var m in page)
+            {
+                var recv = long.TryParse(m.ReceivedTime, out var r) ? r : 0;
+                if (recv > newestRecv) newestRecv = recv;
+                if (!fullScan && recv <= cursor) { stop = true; break; }   // 增量：到达上次同步点
+                if (fullScan && !WithinWindow(recv)) { stop = true; break; } // 全量：超出时间窗口
+                scanned++;
+                if (_db.EmailExistsByZohoId(folder.Name, m.MessageId.ToString()))
+                    continue;                                                // 已下载，跳过
+                toDownload.Add(m);
+            }
+            if (!stop) start += pageSize;
+        }
+
+        // ---- 阶段 2：逐封下载内容，报告准确进度 ----
+        for (int i = 0; i < toDownload.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var m = toDownload[i];
+            progress?.Report($"正在下载{label}… {i + 1}/{toDownload.Count}");
+            var email = await api.ToEmailMessageAsync(accountId, folder.Id, m, folder.Name, ct);
+            if (email == null) continue;
+            if (IsMonitoredZoho(email))
+            {
+                var parsed = SubjectParser.Parse(email.Subject);
+                if (parsed != null)
+                {
+                    email.TicketNumber = parsed.TicketNumber;
+                    email.Product = parsed.Product;
+                    email.Enterprise = parsed.Enterprise;
+                    email.FaultDescription = parsed.Fault;
+                }
+                _db.UpsertEmail(email);
+                newCount++;
+            }
+        }
+
+        if (newestRecv > 0)
+            _db.SetZohoCursor(folder.Name, newestRecv);
+        return newCount;
+    }
+
+    /// <summary>文件夹显示名：Inbox→收件箱，Sent→已发送，其余原样。</summary>
+    private static string FolderLabel(string name) => name.ToLowerInvariant() switch
+    {
+        "inbox" => "收件箱",
+        "sent" => "已发送",
+        _ => name
+    };
+
+    /// <summary>全量扫描时判断 receivedTime(ms) 是否在 首次同步时间窗口 内。</summary>
+    private bool WithinWindow(long receivedMs)
+    {
+        var cutoff = DateTimeOffset.UtcNow.AddDays(-_config.FirstSyncDays).ToUnixTimeMilliseconds();
+        return receivedMs >= cutoff;
+    }
+
+    /// <summary>任一关注客服邮箱出现在 收件人/抄送/发件人 中即纳入。</summary>
+    private bool IsMonitoredZoho(EmailMessage e)
+    {
+        if (_config.MonitoredAddresses.Count == 0) return true;
+        var participants = new List<string> { e.FromAddress };
+        participants.AddRange(SplitList(e.ToAddresses));
+        participants.AddRange(SplitList(e.CcAddresses));
+        return _config.MonitoredAddresses.Any(m =>
+            participants.Any(p => string.Equals(p, m, StringComparison.OrdinalIgnoreCase)));
+    }
+
     /// <summary>判断是否为可自动重试的网络类错误（连接中断/超时/协议断开）。认证失败、用户取消除外。</summary>
     private static bool IsRetryableNetworkError(Exception ex)
     {
@@ -218,6 +368,31 @@ public class WorkflowService
     /// </summary>
     public async Task RunAutoSyncLoopAsync(Action<int>? onSynced, IProgress<string>? progress, CancellationToken ct)
     {
+        // Zoho REST 模式：轮询（每 2 分钟自动同步一次，增量+断点续传，无新邮件时开销很小）
+        bool useZoho = !string.IsNullOrEmpty(_config.ZohoClientId) &&
+                       !string.IsNullOrEmpty(_config.ZohoRefreshToken);
+        if (useZoho)
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    progress?.Report("正在监听新邮件…");
+                    var n = await SyncAndProcessAsync(progress, ct);
+                    if (n > 0) onSynced?.Invoke(n);
+                }
+                catch (OperationCanceledException) { break; }
+                catch (Exception ex)
+                {
+                    progress?.Report($"自动同步失败：{ex.Message}");
+                }
+                try { await Task.Delay(TimeSpan.FromMinutes(2), ct); }
+                catch (OperationCanceledException) { break; }
+            }
+            return;
+        }
+
+        // IMAP 模式：IDLE 监听
         var imap = new ImapSyncService(_config);
         while (!ct.IsCancellationRequested)
         {
@@ -455,8 +630,19 @@ public class WorkflowService
         await Task.WhenAll(tasks);
     }
 
-    /// <summary>清空下载的本地邮件与工单（保留全部配置）。</summary>
-    public void ClearAllData() => _db.ClearAllData();
+    /// <summary>清空下载的本地邮件与工单（保留全部配置）。与同步共用同一把锁，避免清空与同步并发写库。</summary>
+    public async Task ClearAllDataAsync()
+    {
+        await _syncLock.WaitAsync();
+        try
+        {
+            _db.ClearAllData();
+        }
+        finally
+        {
+            _syncLock.Release();
+        }
+    }
 
     /// <summary>获取库中已有的产品/客户列表，供手工指定时选择。</summary>
     public List<string> GetKnownProducts() => _db.GetKnownProducts();

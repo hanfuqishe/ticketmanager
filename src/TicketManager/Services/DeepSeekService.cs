@@ -28,7 +28,7 @@ public class DeepSeekService : IDisposable
             handler.Proxy = new WebProxy($"{config.ProxyHost}:{config.ProxyPort}");
             handler.UseProxy = true;
         }
-        _http = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(3) };
+        _http = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(5) };
         if (!string.IsNullOrEmpty(config.DeepSeekApiKey))
             _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", config.DeepSeekApiKey);
     }
@@ -63,6 +63,9 @@ public class DeepSeekService : IDisposable
             "严格按以下格式输出，不要多余内容：\n" +
             "状态：<新建|处理中|等待客户回复|等待客服回复|等待研发回复|纳入开发计划|合并或拆分为其他工单|已解决|需升级>\n" +
             "总结：<一句话>\n" +
+            "邮件往来中每封已标注方向：[我]=客服本人发出的邮件，[客服]=技术支持/厂商客服发出的邮件，[客户]=客户发出的邮件。" +
+            "总结时必须严格区分客户与客服的意见：客户提出的需求、问题、不满、反馈应归为客户的意见；" +
+            "[我]/[客服] 发出的内容是客服的处理过程、判断与建议，属于我方/客服方，不要把这些说成是客户的意见。" +
             "方向判断：看最后一封邮件的发件人。若最后一封是客户发的（如客户刚上传日志/提供信息），" +
             "说明轮到客服/技术支持回复，状态应为「等待客服回复」或「处理中」；" +
             "若最后一封是客服/技术支持发的（正在等客户提供信息或确认），才用「等待客户回复」。";
@@ -72,11 +75,11 @@ public class DeepSeekService : IDisposable
         userContent.AppendLine("【邮件往来】");
         foreach (var e in thread.Emails.OrderBy(e => e.DateSent))
         {
-            userContent.AppendLine($"---- {e.DateSent:MM-dd HH:mm} {e.DisplaySender} ----");
+            userContent.AppendLine($"---- {e.DateSent:MM-dd HH:mm} {DirectionLabel(e.FromAddress)}{e.DisplaySender} ----");
             userContent.AppendLine(Truncate(e.BodyText, _config.MaxBodyChars / 4));
         }
 
-        var resp = await ChatAsync(systemPrompt, userContent.ToString(), maxTokens: 200);
+        var resp = await ChatAsync(systemPrompt, userContent.ToString(), maxTokens: 256);
         if (string.IsNullOrWhiteSpace(resp)) return null;
 
         var status = "";
@@ -87,9 +90,25 @@ public class DeepSeekService : IDisposable
             if (t.StartsWith("状态：")) status = t["状态：".Length..].Trim();
             else if (t.StartsWith("总结：")) summary = t["总结：".Length..].Trim();
         }
-        if (string.IsNullOrEmpty(status)) return null;
+        if (string.IsNullOrEmpty(status))
+        {
+            // 响应无法解析出状态行：记录原始响应便于排查
+            App.Log("DeepSeek.ParseStatus", new Exception("无法从响应解析出『状态：』行，原始响应: " + (resp.Length > 400 ? resp[..400] : resp)));
+            return null;
+        }
         status = CorrectWaitingDirection(status, thread);
         return (status, string.IsNullOrEmpty(summary) ? resp.Trim() : summary);
+    }
+
+    /// <summary>按发件人地址标注邮件方向：自己的邮箱→[我]，关注客服邮箱→[客服]，否则→[客户]。</summary>
+    private string DirectionLabel(string fromAddress)
+    {
+        if (string.IsNullOrEmpty(fromAddress)) return "[客户]";
+        if (string.Equals(fromAddress, _config.ImapUsername, StringComparison.OrdinalIgnoreCase))
+            return "[我]";
+        if (_config.MonitoredAddresses.Any(m => string.Equals(fromAddress, m, StringComparison.OrdinalIgnoreCase)))
+            return "[客服]";
+        return "[客户]";
     }
 
     /// <summary>按“最后一封邮件”的发件方向纠正 等待类 状态的归属，避免与总结自相矛盾。</summary>
@@ -173,10 +192,12 @@ public class DeepSeekService : IDisposable
                 var content = choices[0].GetProperty("message").GetProperty("content").GetString();
                 return content?.Trim();
             }
+            App.Log("DeepSeek.Chat", new Exception("响应缺少 choices，原始响应: " + (json.Length > 400 ? json[..400] : json)));
             return null;
         }
-        catch
+        catch (Exception ex)
         {
+            App.Log("DeepSeek.Chat", ex); // 记录失败原因（网络/限流/超时等），便于排查
             return null; // 网络/限流/解析失败统一返回 null，由上层计数
         }
         finally

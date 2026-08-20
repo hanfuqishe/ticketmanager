@@ -50,6 +50,8 @@ public class DatabaseService : IDisposable
                 MessageId TEXT NOT NULL DEFAULT '',
                 InReplyTo TEXT NOT NULL DEFAULT '',
                 "References" TEXT NOT NULL DEFAULT '',
+                ZohoMessageId TEXT NOT NULL DEFAULT '',
+                ZohoThreadId INTEGER NOT NULL DEFAULT 0,
                 FromAddress TEXT NOT NULL DEFAULT '',
                 FromName TEXT NOT NULL DEFAULT '',
                 ToAddresses TEXT NOT NULL DEFAULT '',
@@ -80,6 +82,14 @@ public class DatabaseService : IDisposable
                 LastActivity TEXT NOT NULL DEFAULT ''
             );
             """);
+
+        // ---- 迁移：给旧库补 Zoho REST 列（CREATE TABLE IF NOT EXISTS 不会改已存在的表）----
+        var emailCols = new HashSet<string>(conn.Query<string>(
+            "SELECT name FROM pragma_table_info('Emails')"));
+        if (!emailCols.Contains("ZohoMessageId"))
+            conn.Execute("ALTER TABLE Emails ADD COLUMN ZohoMessageId TEXT NOT NULL DEFAULT ''");
+        if (!emailCols.Contains("ZohoThreadId"))
+            conn.Execute("ALTER TABLE Emails ADD COLUMN ZohoThreadId INTEGER NOT NULL DEFAULT 0");
     }
 
     // ================= Settings =================
@@ -109,7 +119,23 @@ public class DatabaseService : IDisposable
     public void ResetSyncCursors()
     {
         using var conn = Open();
-        conn.Execute("DELETE FROM Settings WHERE \"Key\" LIKE 'lastuid:%'");
+        conn.Execute("DELETE FROM Settings WHERE \"Key\" LIKE 'lastuid:%' OR \"Key\" LIKE 'lastzoho:%'");
+    }
+
+    /// <summary>Zoho REST 游标：某文件夹已同步到的最新 receivedTime(ms)。</summary>
+    public long GetZohoCursor(string folder)
+        => long.TryParse(GetSetting($"lastzoho:{folder}"), out var v) ? v : 0;
+    public void SetZohoCursor(string folder, long receivedMs)
+        => SetSetting($"lastzoho:{folder}", receivedMs.ToString());
+
+    /// <summary>判断某文件夹下某 Zoho messageId 的邮件是否已在本地。</summary>
+    public bool EmailExistsByZohoId(string folder, string zohoId)
+    {
+        if (string.IsNullOrEmpty(zohoId)) return false;
+        using var conn = Open();
+        return conn.ExecuteScalar<long?>(
+            "SELECT Id FROM Emails WHERE Folder = @folder AND ZohoMessageId = @zohoId LIMIT 1",
+            new { folder, zohoId }) != null;
     }
 
     /// <summary>判断某文件夹下某 UID 的邮件是否已在本地（按 Folder+Uid），用于同步时跳过已下载的邮件。</summary>
@@ -131,14 +157,18 @@ public class DatabaseService : IDisposable
         if (!string.IsNullOrEmpty(e.MessageId))
             existing = conn.ExecuteScalar<long?>(
                 "SELECT Id FROM Emails WHERE MessageId = @mid LIMIT 1", new { mid = e.MessageId });
-        if (existing == null)
+        if (existing == null && e.Uid > 0)
             existing = conn.ExecuteScalar<long?>(
                 "SELECT Id FROM Emails WHERE Folder = @Folder AND Uid = @Uid LIMIT 1", new { e.Folder, e.Uid });
+        if (existing == null && !string.IsNullOrEmpty(e.ZohoMessageId))
+            existing = conn.ExecuteScalar<long?>(
+                "SELECT Id FROM Emails WHERE Folder = @Folder AND ZohoMessageId = @zid LIMIT 1",
+                new { e.Folder, zid = e.ZohoMessageId });
 
         var p = new
         {
             id = existing ?? 0L,
-            e.Folder, e.Uid, e.MessageId, e.InReplyTo, e.References,
+            e.Folder, e.Uid, e.MessageId, e.InReplyTo, e.References, e.ZohoMessageId, e.ZohoThreadId,
             e.FromAddress, e.FromName, e.ToAddresses, e.CcAddresses,
             e.Subject, e.AiTitle,
             DateSent = e.DateSent.ToString("o"),
@@ -150,7 +180,8 @@ public class DatabaseService : IDisposable
         {
             conn.Execute("""
                 UPDATE Emails SET Folder=@Folder, Uid=@Uid, MessageId=@MessageId, InReplyTo=@InReplyTo,
-                    "References"=@References, FromAddress=@FromAddress, FromName=@FromName,
+                    "References"=@References, ZohoMessageId=@ZohoMessageId, ZohoThreadId=@ZohoThreadId,
+                    FromAddress=@FromAddress, FromName=@FromName,
                     ToAddresses=@ToAddresses, CcAddresses=@CcAddresses, Subject=@Subject, AiTitle=@AiTitle,
                     DateSent=@DateSent, DateReceived=@DateReceived, BodyText=@BodyText, ContentHash=@ContentHash,
                     TicketNumber=@TicketNumber, Product=@Product, Enterprise=@Enterprise,
@@ -162,12 +193,12 @@ public class DatabaseService : IDisposable
         }
 
         e.Id = conn.ExecuteScalar<long>("""
-            INSERT INTO Emails (Folder, Uid, MessageId, InReplyTo, "References", FromAddress, FromName,
-                ToAddresses, CcAddresses, Subject, AiTitle, DateSent, DateReceived, BodyText, ContentHash,
-                TicketNumber, Product, Enterprise, FaultDescription)
-            VALUES (@Folder, @Uid, @MessageId, @InReplyTo, @References, @FromAddress, @FromName,
-                @ToAddresses, @CcAddresses, @Subject, @AiTitle, @DateSent, @DateReceived, @BodyText, @ContentHash,
-                @TicketNumber, @Product, @Enterprise, @FaultDescription);
+            INSERT INTO Emails (Folder, Uid, MessageId, InReplyTo, "References", ZohoMessageId, ZohoThreadId,
+                FromAddress, FromName, ToAddresses, CcAddresses, Subject, AiTitle, DateSent, DateReceived,
+                BodyText, ContentHash, TicketNumber, Product, Enterprise, FaultDescription)
+            VALUES (@Folder, @Uid, @MessageId, @InReplyTo, @References, @ZohoMessageId, @ZohoThreadId,
+                @FromAddress, @FromName, @ToAddresses, @CcAddresses, @Subject, @AiTitle, @DateSent, @DateReceived,
+                @BodyText, @ContentHash, @TicketNumber, @Product, @Enterprise, @FaultDescription);
             SELECT last_insert_rowid();
             """, p);
         return e.Id;
@@ -368,7 +399,7 @@ public class DatabaseService : IDisposable
         conn.Execute("DELETE FROM Emails", transaction: tx);
         conn.Execute("DELETE FROM Threads", transaction: tx);
         // 仅重置同步游标，使下次同步按首次同步（最近 FirstSyncDays 天）重新拉取；其余配置保留
-        conn.Execute("DELETE FROM Settings WHERE \"Key\" LIKE 'lastuid:%'", transaction: tx);
+        conn.Execute("DELETE FROM Settings WHERE \"Key\" LIKE 'lastuid:%' OR \"Key\" LIKE 'lastzoho:%'", transaction: tx);
         tx.Commit();
     }
 
@@ -382,6 +413,8 @@ public class DatabaseService : IDisposable
         MessageId = (string)r.MessageId,
         InReplyTo = (string)r.InReplyTo,
         References = (string)r.References,
+        ZohoMessageId = (string)r.ZohoMessageId,
+        ZohoThreadId = r.ZohoThreadId == null ? null : (long)r.ZohoThreadId,
         FromAddress = (string)r.FromAddress,
         FromName = (string)r.FromName,
         ToAddresses = (string)r.ToAddresses,

@@ -33,6 +33,14 @@ public class AppConfig
     public int ProxyPort { get; set; } = 1080;
     public bool ProxyForImap { get; set; } = true;
     public bool ProxyForDeepSeek { get; set; }
+    public bool ProxyForZoho { get; set; } // Zoho REST API 走代理（直连被封锁时必需，独立于总开关）
+
+    // ===== Zoho Mail REST API（IMAP 被封锁后的替代） =====
+    public string ZohoApiBase { get; set; } = "https://mail.zoho.com/api";
+    public string ZohoClientId { get; set; } = "";
+    public string ZohoClientSecret { get; set; } = "";
+    public string ZohoRefreshToken { get; set; } = "";
+    public string ZohoAccountId { get; set; } = ""; // 留空自动获取
 
     // ===== 其他 =====
     public int FirstSyncDays { get; set; } = 7;

@@ -13,5 +13,10 @@ obj/
 *.db
 *.db-journal
 
+# 敏感凭据（Zoho OAuth、邮件账号等），切勿提交
+Self Client.txt
+self_client*.json
+邮件账号*.txt
+
 # 图标生成器预览
 tools/IconGen/preview.png

@@ -22,13 +22,47 @@ public class ThreadBuilder
             if (!string.IsNullOrEmpty(e.MessageId) && !index.ContainsKey(e.MessageId))
                 index[e.MessageId] = e;
 
-        // 为每封邮件确定所属工单
-        var groups = new Dictionary<string, List<EmailMessage>>(StringComparer.OrdinalIgnoreCase);
+        // 第一步：为每封邮件确定所属工单（含 References/后代继承）
+        var ticketOf = new Dictionary<long, string>();
         foreach (var e in allEmails)
         {
             var ticket = !string.IsNullOrEmpty(e.TicketNumber)
                 ? e.TicketNumber
                 : ResolveTicket(e, index) ?? ResolveTicketFromDescendants(e, allEmails, index);
+            ticketOf[e.Id] = ticket ?? "";
+        }
+
+        // 第二步：用 Zoho threadId 把 无工单号的报障邮件 并进 客服回复所在工单组。
+        // REST 拉取的邮件没有 MessageId/In-Reply-To/References（全空），
+        // 报障邮件（发件箱）无工单号无法靠引用继承，但 Zoho 官方 threadId 天然标识同一对话。
+        var threadToTicket = new Dictionary<long, string>();
+        var threadCounts = new Dictionary<long, Dictionary<string, int>>(/* ticket 计数 */);
+        foreach (var e in allEmails)
+        {
+            if (e.ZohoThreadId is not long zid || zid <= 0) continue;
+            var t = ticketOf[e.Id];
+            if (string.IsNullOrEmpty(t)) continue;
+            if (!threadCounts.TryGetValue(zid, out var counts))
+            {
+                counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                threadCounts[zid] = counts;
+            }
+            counts[t] = counts.GetValueOrDefault(t) + 1;
+        }
+        foreach (var kv in threadCounts)
+            threadToTicket[kv.Key] = kv.Value.OrderByDescending(x => x.Value).First().Key;
+        foreach (var e in allEmails)
+        {
+            if (!string.IsNullOrEmpty(ticketOf[e.Id])) continue;
+            if (e.ZohoThreadId is long zid && zid > 0 && threadToTicket.TryGetValue(zid, out var t))
+                ticketOf[e.Id] = t;
+        }
+
+        // 第三步：按工单号分组
+        var groups = new Dictionary<string, List<EmailMessage>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in allEmails)
+        {
+            var ticket = ticketOf[e.Id];
             var key = string.IsNullOrEmpty(ticket)
                 ? $"__untitled__|{e.Enterprise}|{e.Product}"
                 : ticket;

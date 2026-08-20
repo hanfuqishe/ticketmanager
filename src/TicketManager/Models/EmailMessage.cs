@@ -12,6 +12,8 @@ public class EmailMessage
     public string MessageId { get; set; } = "";
     public string InReplyTo { get; set; } = "";
     public string References { get; set; } = "";
+    public string ZohoMessageId { get; set; } = ""; // Zoho REST 的 messageId（去重/游标用）
+    public long? ZohoThreadId { get; set; } // Zoho REST 的线程 id（旧数据可为 null）
 
     public string FromAddress { get; set; } = "";
     public string FromName { get; set; } = "";

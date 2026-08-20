@@ -121,6 +121,7 @@ public class MainViewModel : ViewModelBase
     public string DbPath => App.Db.DbPath;
 
     public ICommand SyncCommand { get; }
+    public ICommand StopSyncCommand { get; }
     public ICommand OpenSettingsCommand { get; }
     public ICommand ClearDataCommand { get; }
 
@@ -129,19 +130,37 @@ public class MainViewModel : ViewModelBase
         _workflow = workflow;
         _selectedSort = SortOptions[0];
         SyncCommand = new RelayCommand(async _ => await SyncAsync());
+        StopSyncCommand = new RelayCommand(_ => StopSync());
         OpenSettingsCommand = new RelayCommand(_ => OpenSettings());
         ClearDataCommand = new RelayCommand(async _ => await ClearAllDataAsync());
     }
 
     private CancellationTokenSource? _autoSyncCts;
+    private CancellationTokenSource? _manualSyncCts; // 手动同步的取消源（“停止同步”用它）
 
-    /// <summary>启动自动收取（IMAP IDLE 监听新邮件，到达即自动同步）。按当前配置决定是否开启。</summary>
+    /// <summary>停止正在进行的（手动）同步。</summary>
+    private void StopSync()
+    {
+        _manualSyncCts?.Cancel();
+        StatusText = "正在停止同步…";
+    }
+
+    /// <summary>启动自动收取。REST 模式检查 Zoho 配置，否则检查 IMAP 配置；按当前配置决定是否开启。</summary>
     public void StartAutoSync()
     {
         StopAutoSync();
         if (!_workflow.Config.EnableAutoSync) return;
-        if (string.IsNullOrWhiteSpace(_workflow.Config.ImapUsername) ||
-            string.IsNullOrWhiteSpace(_workflow.Config.ImapHost)) return;
+        bool useZoho = !string.IsNullOrEmpty(_workflow.Config.ZohoClientId) &&
+                       !string.IsNullOrEmpty(_workflow.Config.ZohoRefreshToken);
+        if (useZoho)
+        {
+            if (string.IsNullOrWhiteSpace(_workflow.Config.ZohoRefreshToken)) return;
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(_workflow.Config.ImapUsername) ||
+                string.IsNullOrWhiteSpace(_workflow.Config.ImapHost)) return;
+        }
 
         _autoSyncCts = new CancellationTokenSource();
         var ct = _autoSyncCts.Token;
@@ -178,11 +197,26 @@ public class MainViewModel : ViewModelBase
         StatusText = $"已加载 {_threads.Count} 条工单线索";
     }
 
-    /// <summary>启动时：先自动同步一次，随后进入自动收取新邮件模式（若已启用）。</summary>
+    /// <summary>
+    /// 启动后：延迟片刻再自动同步一次（给用户留出"清空本地数据"的时间），
+    /// 随后进入自动收取新邮件模式（若已启用）。延迟期间点清空会取消本次自动同步。
+    /// </summary>
     public async void AutoSyncAndListen()
     {
-        await SyncAsync();
-        StartAutoSync();
+        var cts = new CancellationTokenSource();
+        _autoSyncCts = cts;
+        var ct = cts.Token;
+        try
+        {
+            // 首次自动同步延迟 10 秒：此时若用户点击"清空本地数据"，
+            // ClearAllDataAsync 里的 StopAutoSync 会取消本延迟与同步。
+            await Task.Delay(TimeSpan.FromSeconds(10), ct);
+            if (ct.IsCancellationRequested) return;
+            await SyncAsync(ct);
+            if (ct.IsCancellationRequested) return;
+            StartAutoSync();
+        }
+        catch (OperationCanceledException) { }
     }
 
     /// <summary>重新加载线程并重建树（手工设置产品/客户后刷新）。</summary>
@@ -246,17 +280,28 @@ public class MainViewModel : ViewModelBase
         StatusText = "AI 总结已更新";
     }
 
-    private async Task SyncAsync()
+    private async Task SyncAsync(CancellationToken externalCt = default)
     {
         if (IsBusy) return;
         IsBusy = true;
+        // 链接外部令牌（自动同步的取消）与手动取消源（停止同步），两者任一取消都会中断本次同步
+        _manualSyncCts?.Dispose();
+        _manualSyncCts = CancellationTokenSource.CreateLinkedTokenSource(externalCt);
+        var ct = _manualSyncCts.Token;
         try
         {
             var progress = new Progress<string>(s => StatusText = s);
-            var n = await _workflow.SyncAndProcessAsync(progress);
+            var n = await _workflow.SyncAndProcessAsync(progress, ct);
             _threads = _workflow.LoadThreads();
             RebuildTree();
             StatusText = $"同步完成：新增 {n} 封邮件，共 {_threads.Count} 条线索";
+        }
+        catch (OperationCanceledException)
+        {
+            // 同步被“停止同步”或自动同步取消：保留已同步的邮件，重建线程刷新界面
+            _threads = _workflow.LoadThreads();
+            RebuildTree();
+            StatusText = "同步已停止（已保留同步到的邮件）";
         }
         catch (Exception ex)
         {
@@ -268,6 +313,8 @@ public class MainViewModel : ViewModelBase
         finally
         {
             IsBusy = false;
+            _manualSyncCts?.Dispose();
+            _manualSyncCts = null;
         }
     }
 
@@ -284,7 +331,12 @@ public class MainViewModel : ViewModelBase
 
     private async Task ClearAllDataAsync()
     {
-        if (IsBusy) return;
+        if (IsBusy)
+        {
+            MessageBox.Show("正在同步中，请稍候片刻再试。", "清空本地邮件数据",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         var confirm = MessageBox.Show(
             "确定要清空本地邮件数据吗？此操作不可恢复！\n\n" +
             "将删除：已下载的所有邮件和工单线索，并重置同步状态（下次同步重新拉取最近 7 天的邮件）。\n\n" +
@@ -292,11 +344,12 @@ public class MainViewModel : ViewModelBase
             "清空本地邮件数据", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (confirm != MessageBoxResult.Yes) return;
 
+        StopAutoSync(); // 先停掉后台自动同步，避免清空后又被自动拉回
         IsBusy = true;
         try
         {
             await Task.Yield(); // 让忙碌指示先刷新
-            _workflow.ClearAllData();
+            await _workflow.ClearAllDataAsync();
             SelectedThread = null;
             SelectedEmail = null;
             _threads = new List<TicketThread>();

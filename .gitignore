@@ -20,3 +20,8 @@ self_client*.json
 
 # 图标生成器预览
 tools/IconGen/preview.png
+
+# 打包产物（安装包 / 便携包），体积大不入库
+installer/
+*.CAB
+*.SED

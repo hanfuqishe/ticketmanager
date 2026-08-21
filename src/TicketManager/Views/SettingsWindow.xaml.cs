@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Navigation;
 using TicketManager.Models;
 using TicketManager.Services;
 using TicketManager.ViewModels;
@@ -28,6 +29,37 @@ public partial class SettingsWindow : Window
         _vm.Config.ZohoRefreshToken = ZohoRefreshTokenBox.Password;
         _vm.Save();
         DialogResult = true;
+    }
+
+    /// <summary>把 Zoho Scope 复制到剪贴板（一键复制）。</summary>
+    private void CopyScope_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Clipboard.SetText("ZohoMail.accounts.READ,ZohoMail.folders.READ,ZohoMail.messages.READ");
+            MessageBox.Show(this, "Scope 已复制到剪贴板，可直接粘贴到 Zoho 的 Generate Token 页面。", "复制成功",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"复制失败：{ex.Message}", "复制", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>点击蓝色超链接：用系统默认浏览器打开目标网页。</summary>
+    private void Link_RequestNavigate(object sender, RequestNavigateEventArgs e)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true };
+            System.Diagnostics.Process.Start(psi);
+            e.Handled = true;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"无法打开链接：{ex.Message}", "打开链接",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     /// <summary>用当前输入框（可能未保存）的凭据测试 Zoho REST API 连接。</summary>

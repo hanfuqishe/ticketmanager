@@ -25,6 +25,12 @@ public class ThreadViewModel
     public string Summary => Thread.StatusSummary;
     public string CountText => $"{Thread.EmailCount} 封";
 
+    /// <summary>线索内是否存在新同步的邮件（根线索高亮用）。</summary>
+    public bool HasNewMail => Thread.Emails.Any(e => e.IsNew);
+
+    /// <summary>手工设置状态时填写的理由（AI 状态为空串）。</summary>
+    public string StatusReason => Thread.StatusReason;
+
     public Brush StatusBrush => Status switch
     {
         "已解决" => Brushes.ForestGreen,

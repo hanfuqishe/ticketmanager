@@ -35,6 +35,10 @@ public class EmailMessage
     public string Enterprise { get; set; } = "";
     public string FaultDescription { get; set; } = "";
 
+    // ---- 同步标记 ----
+    /// <summary>是否为最近同步新增的邮件（用于高亮与跳转）。</summary>
+    public bool IsNew { get; set; }
+
     // ---- 线程归属（由 ThreadBuilder 填充）----
     public long ThreadId { get; set; }
 

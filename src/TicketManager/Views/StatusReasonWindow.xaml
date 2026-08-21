@@ -1,0 +1,18 @@
+<Window x:Class="TicketManager.Views.StatusReasonWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="设置工单状态理由" Width="460" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner" FontFamily="Microsoft YaHei UI" FontSize="13" ResizeMode="NoResize">
+    <StackPanel Margin="16">
+        <TextBlock x:Name="StatusLabel" Text="状态：等待客户回复" FontWeight="SemiBold" FontSize="14"/>
+        <TextBlock Text="手工设置此状态的理由（可留空；下次选中该线索时会显示）：" Margin="0,12,0,0" TextWrapping="Wrap"/>
+        <TextBlock x:Name="AiHint" Text="已自动填入 AI 归纳的意见，可修改或清空。" Foreground="#2B7DE9"
+                   Margin="0,4,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
+        <TextBox x:Name="ReasonBox" Margin="0,6,0,0" Padding="4" Height="66" AcceptsReturn="True"
+                 TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+            <Button Content="确定" Width="80" Padding="6,3" Click="Ok_Click" IsDefault="True"/>
+            <Button Content="取消" Width="80" Padding="6,3" Margin="10,0,0,0" IsCancel="True"/>
+        </StackPanel>
+    </StackPanel>
+</Window>

@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Windows;
 using System.Windows.Media;
 using TicketManager.Models;
 using TicketManager.Services;
@@ -85,6 +86,28 @@ public class EmailNodeViewModel : ViewModelBase
     /// <summary>是否为线程根邮件（第 0 层）。</summary>
     public bool IsRoot => Depth == 0;
 
+    /// <summary>本邮件是否为最近同步新增（用于高亮与跳转）。</summary>
+    public bool IsNew => Email.IsNew;
+
+    /// <summary>根邮件且线索内含新同步邮件（用于根线索高亮）。</summary>
+    public bool IsNewRoot => IsRoot && ThreadOwner.HasNewMail;
+
+    /// <summary>新邮件徽章可见性（非根的新邮件在行首显示 NEW）。</summary>
+    public Visibility NewBadgeVisibility => IsNew ? Visibility.Visible : Visibility.Collapsed;
+
+    /// <summary>新邮件用加粗字体标记：本邮件是新邮件，或其根线索含新邮件时标题加粗。</summary>
+    public FontWeight TitleWeight => (IsNew || IsNewRoot) ? FontWeights.Bold : FontWeights.Normal;
+
+    /// <summary>“新邮件/有新增”标记变化后刷新本节点与子节点（不清除时逐个刷新加粗）。</summary>
+    public void RefreshNewState()
+    {
+        OnPropertyChanged(nameof(IsNew));
+        OnPropertyChanged(nameof(IsNewRoot));
+        OnPropertyChanged(nameof(NewBadgeVisibility));
+        OnPropertyChanged(nameof(TitleWeight));
+        foreach (var c in Children) c.RefreshNewState();
+    }
+
     private bool _isMultiSelected;
     /// <summary>是否被 Ctrl/Shift 多选（仅根线索高亮）。</summary>
     public bool IsMultiSelected
@@ -93,8 +116,8 @@ public class EmailNodeViewModel : ViewModelBase
         set => Set(ref _isMultiSelected, value);
     }
 
-    /// <summary>邮件节点默认收起（显示树结构但不展开邮件细节）。</summary>
-    public bool ExpandedByDefault => false;
+    /// <summary>邮件节点默认展开（按“展开层次”设置；通常收起）。</summary>
+    public bool ExpandedByDefault { get; set; } = false;
 
     /// <summary>工单状态（仅根邮件显示），非根返回空。</summary>
     public string Status => IsRoot ? ThreadOwner.Status : "";

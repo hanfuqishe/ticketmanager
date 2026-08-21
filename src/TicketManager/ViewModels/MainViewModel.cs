@@ -19,7 +19,15 @@ public class MainViewModel : ViewModelBase
     private TreeSortMode _sortMode = TreeSortMode.Time;
     private SortOption _selectedSort = null!;
 
-    public ObservableCollection<CustomerGroupViewModel> Customers { get; } = new();
+    private ObservableCollection<CustomerGroupViewModel> _customers = new();
+    public ObservableCollection<CustomerGroupViewModel> Customers => _customers;
+
+    /// <summary>一次性替换客户分组集合（避免 Clear+逐条 Add 导致的界面闪烁/空白）。</summary>
+    private void ReplaceCustomers(IEnumerable<CustomerGroupViewModel> items)
+    {
+        _customers = new ObservableCollection<CustomerGroupViewModel>(items);
+        OnPropertyChanged(nameof(Customers));
+    }
 
     public ObservableCollection<SortOption> SortOptions { get; } = new()
     {
@@ -27,6 +35,42 @@ public class MainViewModel : ViewModelBase
         new("按产品名称", TreeSortMode.Product),
         new("按客户名称", TreeSortMode.Customer),
     };
+
+    private int _expandDepth = 3;
+    /// <summary>默认展开层次：1=只显示用户名称，2=显示到产品名称，3=显示到线索首邮件（默认），4=显示所有邮件。</summary>
+    public int ExpandDepth
+    {
+        get => _expandDepth;
+        set
+        {
+            if (!Set(ref _expandDepth, Math.Clamp(value, 1, 4))) return;
+            OnPropertyChanged(nameof(IsExpandDepth1));
+            OnPropertyChanged(nameof(IsExpandDepth2));
+            OnPropertyChanged(nameof(IsExpandDepth3));
+            OnPropertyChanged(nameof(IsExpandDepth4));
+            _workflow.SetExpandDepth(_expandDepth); // 持久化，重启后保留
+            ApplyExpandDepthToVm(); // 只更新现有 VM 的展开标志（不重建整棵树，更快）
+        }
+    }
+    public bool IsExpandDepth1 => ExpandDepth == 1;
+    public bool IsExpandDepth2 => ExpandDepth == 2;
+    public bool IsExpandDepth3 => ExpandDepth == 3;
+    public bool IsExpandDepth4 => ExpandDepth == 4;
+
+    /// <summary>按当前展开层次更新树中所有节点的 ExpandedByDefault（复用现有 VM，避免重建树导致卡顿）。</summary>
+    public void ApplyExpandDepthToVm()
+    {
+        foreach (var cust in Customers)
+        {
+            cust.ExpandedByDefault = ExpandDepth >= 2;
+            foreach (var prod in cust.Products)
+            {
+                prod.ExpandedByDefault = ExpandDepth >= 3;
+                foreach (var root in prod.Threads)
+                    SetEmailExpandDepth(root, ExpandDepth);
+            }
+        }
+    }
 
     public SortOption SelectedSort
     {
@@ -78,15 +122,22 @@ public class MainViewModel : ViewModelBase
         }
     }
 
-    /// <summary>线索根邮件主题是否匹配检索关键字（留空显示全部）。</summary>
+    /// <summary>
+    /// 线索是否匹配检索关键字（留空显示全部）。
+    /// 匹配范围：线索工单号 + 线程内任意邮件的主题/AI 标题。
+    /// 根邮件（首封报障）往往不含工单号（工单号在客服后续回复才加入主题），因此不能只匹配根邮件主题。
+    /// </summary>
     private bool MatchesSearch(TicketThread t)
     {
         if (string.IsNullOrWhiteSpace(_searchText)) return true;
         var q = _searchText.Trim();
-        var root = t.Emails.Count > 0 ? t.Emails[0] : t.DisplayRoots.FirstOrDefault()?.Email;
-        if (root == null) return false;
-        return root.Subject.Contains(q, StringComparison.OrdinalIgnoreCase) ||
-               root.AiTitle.Contains(q, StringComparison.OrdinalIgnoreCase);
+        if (t.TicketNumber.Contains(q, StringComparison.OrdinalIgnoreCase))
+            return true;
+        foreach (var e in t.Emails)
+            if (e.Subject.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                e.AiTitle.Contains(q, StringComparison.OrdinalIgnoreCase))
+                return true;
+        return false;
     }
 
     private ThreadViewModel? _selectedThread;
@@ -101,6 +152,9 @@ public class MainViewModel : ViewModelBase
                 OnPropertyChanged(nameof(SelectedThreadSummary));
                 OnPropertyChanged(nameof(SelectedSummaryBorder));
                 OnPropertyChanged(nameof(SelectedSummaryBackground));
+                OnPropertyChanged(nameof(SelectedStatusReason));
+                OnPropertyChanged(nameof(SelectedStatusReasonDisplay));
+                OnPropertyChanged(nameof(HasStatusReason));
             }
         }
     }
@@ -125,6 +179,16 @@ public class MainViewModel : ViewModelBase
     public string SelectedThreadHeader => SelectedThread?.Header ?? "未选择工单";
     public string SelectedThreadSummary =>
         SelectedThread?.Summary ?? "从左侧选择一条工单线索，查看邮件往来与智能总结。";
+
+    /// <summary>选中线索的手工状态理由（无则空串，右侧总结区显示）。</summary>
+    public string SelectedStatusReason => SelectedThread?.Thread.StatusReason ?? "";
+
+    /// <summary>手工状态理由显示文本（带前缀；无理由时为空）。</summary>
+    public string SelectedStatusReasonDisplay =>
+        string.IsNullOrEmpty(SelectedStatusReason) ? "" : $"📝 手工设置理由：{SelectedStatusReason}";
+
+    /// <summary>是否存在手工状态理由（控制右侧显示）。</summary>
+    public bool HasStatusReason => !string.IsNullOrEmpty(SelectedStatusReason);
 
     /// <summary>AI 总结框配色（随工单状态变化）。</summary>
     public Brush SelectedSummaryBorder => SelectedThread?.SummaryBorder ?? Brushes.Gray;
@@ -221,6 +285,13 @@ public class MainViewModel : ViewModelBase
     public ICommand TranslateEmailCommand { get; }
     public ICommand OpenSettingsCommand { get; }
     public ICommand ClearDataCommand { get; }
+    public ICommand JumpToNewMailCommand { get; }
+
+    /// <summary>跳转新邮件的请求（由主窗口订阅执行 TreeView 滚动选中）。</summary>
+    public event Action? JumpToNewMailRequested;
+
+    /// <summary>增量合并后已恢复选中（节点可能被替换/移动），主窗口据此在 TreeView 中重新高亮选中。</summary>
+    public event Action? SelectionRestoredAfterMerge;
 
     public MainViewModel(WorkflowService workflow)
     {
@@ -231,6 +302,7 @@ public class MainViewModel : ViewModelBase
         TranslateEmailCommand = new RelayCommand(async _ => await TranslateEmailAsync());
         OpenSettingsCommand = new RelayCommand(_ => OpenSettings());
         ClearDataCommand = new RelayCommand(async _ => await ClearAllDataAsync());
+        JumpToNewMailCommand = new RelayCommand(_ => JumpToNewMailRequested?.Invoke());
     }
 
     // ---- 多线索选择（Ctrl/Shift 多选）与批量设置产品/客户 ----
@@ -267,11 +339,14 @@ public class MainViewModel : ViewModelBase
                     n.IsMultiSelected = _selectedThreadIds.Contains(n.Email.ThreadId);
     }
 
-    /// <summary>对一组线索统一设置 产品/客户（只覆盖非空字段），并重建线程表使分组刷新。</summary>
-    public void SetMetaForThreads(IEnumerable<long> threadIds, string product, string enterprise)
+    /// <summary>
+    /// 对一组线索统一设置 产品/客户（rootEmailIds 为各线索的根邮件 Id，稳定不随线程重建变化），
+    /// 并重建线程表使分组刷新。不能用 ThreadId 定位：后台自动同步重建线程后 ThreadId 会重新分配。
+    /// </summary>
+    public void SetMetaForThreads(IEnumerable<long> rootEmailIds, string product, string enterprise)
     {
-        foreach (var tid in threadIds)
-            _workflow.SetThreadMeta(tid, product, enterprise);
+        foreach (var id in rootEmailIds)
+            _workflow.SetThreadMetaByRootEmail(id, product, enterprise);
         _workflow.RebuildThreads(); // 重建线程表（按新产品/客户归组），否则界面分组不会刷新
     }
 
@@ -374,7 +449,7 @@ public class MainViewModel : ViewModelBase
                     onSynced: _ => Application.Current.Dispatcher.Invoke(() =>
                     {
                         _threads = _workflow.LoadThreads();
-                        RebuildTree();
+                        MergeThreads(_threads); // 增量合并新邮件到现有树，保留折叠层次
                     }),
                     progress, ct);
             }
@@ -393,6 +468,7 @@ public class MainViewModel : ViewModelBase
     public void Load()
     {
         _workflow.LoadConfig(); // 确保配置已加载（发件人配色需要客服邮箱与自身邮箱）
+        _expandDepth = _workflow.GetExpandDepth(); // 恢复上次的“展开层次”设置
         _threads = _workflow.LoadThreads();
         RebuildTree();
         StatusText = $"已加载 {_threads.Count} 条工单线索";
@@ -427,56 +503,68 @@ public class MainViewModel : ViewModelBase
         RebuildTree();
     }
 
-    /// <summary>手工设置线程状态：更新数据库 + 内存线程对象，并就地刷新根邮件显示（不重建树，避免闪烁）。</summary>
-    public void SetThreadStatus(long threadId, string status)
+    /// <summary>按根邮件 Id 手工设置线程状态：更新数据库 + 内存线程对象，并就地刷新根邮件显示（不重建树，避免闪烁）。</summary>
+    public void SetThreadStatusByRootEmail(long rootEmailId, string status, string reason = "")
     {
-        _workflow.SetThreadStatus(threadId, status);
+        _workflow.SetThreadStatusByRootEmail(rootEmailId, status, reason);
+        long updatedThreadId = 0;
         foreach (var cust in Customers)
             foreach (var prod in cust.Products)
                 foreach (var root in prod.Threads)
                 {
-                    if (root.Email.ThreadId != threadId) continue;
+                    if (root.Email.Id != rootEmailId) continue;
+                    updatedThreadId = root.Email.ThreadId;
                     root.ThreadOwner.Thread.Status = status;
                     root.ThreadOwner.Thread.StatusSummary = "";
+                    root.ThreadOwner.Thread.StatusReason = reason;
                     root.RefreshThreadInfo();
                     break;
                 }
-        // 若右侧详情面板显示的是该线程，同步刷新标题/总结/状态框配色
-        if (SelectedThread != null && SelectedThread.Thread.Id == threadId)
+        // 若右侧详情面板显示的是该线程，同步刷新标题/总结/状态框配色/理由
+        if (SelectedThread != null && SelectedThread.Thread.Id == updatedThreadId)
         {
             OnPropertyChanged(nameof(SelectedThreadHeader));
             OnPropertyChanged(nameof(SelectedThreadSummary));
             OnPropertyChanged(nameof(SelectedSummaryBorder));
             OnPropertyChanged(nameof(SelectedSummaryBackground));
+            OnPropertyChanged(nameof(SelectedStatusReason));
+            OnPropertyChanged(nameof(SelectedStatusReasonDisplay));
+            OnPropertyChanged(nameof(HasStatusReason));
         }
     }
 
     /// <summary>立即用 AI 重新生成某线程的状态/总结并就地刷新显示（不重建树）。</summary>
-    public async Task RegenerateThreadStatusAsync(long threadId)
+    public async Task RegenerateThreadStatusAsync(long rootEmailId)
     {
         StatusText = "正在用 AI 总结该工单…";
-        var r = await _workflow.RegenerateThreadStatusAsync(threadId);
+        var r = await _workflow.RegenerateThreadStatusAsync(rootEmailId);
         if (r == null)
         {
             StatusText = "AI 总结失败（可能未配置 API Key 或调用出错）";
             return;
         }
+        long updatedThreadId = 0;
         foreach (var cust in Customers)
             foreach (var prod in cust.Products)
                 foreach (var root in prod.Threads)
                 {
-                    if (root.Email.ThreadId != threadId) continue;
+                    if (root.Email.Id != rootEmailId) continue;
+                    updatedThreadId = root.Email.ThreadId;
                     root.ThreadOwner.Thread.Status = r.Value.Status;
                     root.ThreadOwner.Thread.StatusSummary = r.Value.Summary;
+                    root.ThreadOwner.Thread.StatusReason = ""; // AI 采纳，清空手工理由
                     root.RefreshThreadInfo();
                     break;
                 }
-        if (SelectedThread != null && SelectedThread.Thread.Id == threadId)
+        if (SelectedThread != null && SelectedThread.Thread.Id == updatedThreadId)
         {
             OnPropertyChanged(nameof(SelectedThreadHeader));
             OnPropertyChanged(nameof(SelectedThreadSummary));
             OnPropertyChanged(nameof(SelectedSummaryBorder));
             OnPropertyChanged(nameof(SelectedSummaryBackground));
+            OnPropertyChanged(nameof(SelectedStatusReason));
+            OnPropertyChanged(nameof(SelectedStatusReasonDisplay));
+            OnPropertyChanged(nameof(HasStatusReason));
         }
         StatusText = "AI 总结已更新";
     }
@@ -494,21 +582,21 @@ public class MainViewModel : ViewModelBase
             var progress = CreateProgress();
             var n = await _workflow.SyncAndProcessAsync(progress, ct);
             _threads = _workflow.LoadThreads();
-            RebuildTree();
+            MergeThreads(_threads); // 增量合并新邮件到现有树，保留折叠层次
             StatusText = $"同步完成：新增 {n} 封邮件，共 {_threads.Count} 条线索";
         }
         catch (OperationCanceledException)
         {
-            // 同步被“停止同步”或自动同步取消：保留已同步的邮件，重建线程刷新界面
+            // 同步被“停止同步”或自动同步取消：保留已同步的邮件，增量合并刷新界面
             _threads = _workflow.LoadThreads();
-            RebuildTree();
+            MergeThreads(_threads);
             StatusText = "同步已停止（已保留同步到的邮件）";
         }
         catch (Exception ex)
         {
-            // 已入库的邮件仍在：重建线程并刷新界面，避免“同步失败 = 数据全部丢失”的错觉
+            // 已入库的邮件仍在：增量合并刷新界面，避免“同步失败 = 数据全部丢失”的错觉
             _threads = _workflow.LoadThreads();
-            RebuildTree();
+            MergeThreads(_threads);
             StatusText = $"同步失败：{ex.Message}（已保留已同步的邮件）";
         }
         finally
@@ -524,6 +612,7 @@ public class MainViewModel : ViewModelBase
 
     private void OpenSettings()
     {
+        var oldMonitored = _workflow.Config.MonitoredAddresses.ToList();
         var win = new Views.SettingsWindow(_workflow)
         {
             Owner = Application.Current.MainWindow
@@ -533,7 +622,18 @@ public class MainViewModel : ViewModelBase
         {
             Load();
             StartAutoSync();
+            // 关注客服邮箱发生变化（新增/删除）→ 立即重新同步，拉取新关注邮箱相关的邮件
+            var newMonitored = _workflow.Config.MonitoredAddresses;
+            if (!SameAddressSet(oldMonitored, newMonitored))
+                _ = SyncAsync();
         }
+    }
+
+    private static bool SameAddressSet(List<string> a, List<string> b)
+    {
+        var sa = new HashSet<string>(a, StringComparer.OrdinalIgnoreCase);
+        var sb = new HashSet<string>(b, StringComparer.OrdinalIgnoreCase);
+        return sa.SetEquals(sb);
     }
 
     private async Task ClearAllDataAsync()
@@ -577,19 +677,75 @@ public class MainViewModel : ViewModelBase
 
     public void SelectEmail(EmailNodeViewModel ev)
     {
+        // 点击/选中新邮件 → 清除该邮件的新标记（查看即已读），并刷新整条线索的加粗状态
+        if (ev.IsNew)
+        {
+            _workflow.MarkEmailSeen(ev.Email.Id);
+            ev.Email.IsNew = false;
+            foreach (var root in ev.ThreadOwner.Children)
+                root.RefreshNewState();
+        }
         SelectedEmail = ev;
         SelectedThread = ev.ThreadOwner;
     }
 
+    /// <summary>把指定线索内的所有新同步邮件标记为已读（右键“全部已读”），并就地刷新加粗状态。</summary>
+    public void MarkThreadSeen(long threadId)
+    {
+        _workflow.MarkThreadSeen(threadId);
+        foreach (var cust in Customers)
+            foreach (var prod in cust.Products)
+                foreach (var root in prod.Threads)
+                    if (root.Email.ThreadId == threadId)
+                    {
+                        ClearThreadNew(root); // 内存同步清除该线索下所有邮件的新标记
+                        root.RefreshNewState();
+                        break;
+                    }
+    }
+
+    /// <summary>递归把某线索节点及其子树所有邮件的 IsNew 置为已读（配合“全部已读”内存刷新）。</summary>
+    private static void ClearThreadNew(EmailNodeViewModel n)
+    {
+        n.Email.IsNew = false;
+        foreach (var c in n.Children) ClearThreadNew(c);
+    }
+
     private void RebuildTree()
     {
+        CaptureVmExpansion(); // 记录当前各节点的展开状态（含用户手动折叠），重建后保留
         BuildTree(_threads, _sortMode);
         if (_selectedThreadIds.Count > 0) UpdateSelectionHighlight(); // 重建后恢复多选高亮
     }
 
+    // 重建树前捕获的展开状态（key：客户/产品名称、邮件 Id），用于自动同步等重建后保留用户的折叠层次
+    private Dictionary<string, bool> _vmExpansion = new();
+
+    private void CaptureVmExpansion()
+    {
+        var dict = new Dictionary<string, bool>();
+        foreach (var cust in Customers)
+        {
+            dict["c:" + cust.Name] = cust.ExpandedByDefault;
+            foreach (var prod in cust.Products)
+            {
+                dict["p:" + prod.Name] = prod.ExpandedByDefault;
+                foreach (var root in prod.Threads)
+                    CaptureEmailExpansion(root, dict);
+            }
+        }
+        _vmExpansion = dict;
+    }
+
+    private static void CaptureEmailExpansion(EmailNodeViewModel node, Dictionary<string, bool> dict)
+    {
+        dict["e:" + node.Email.Id] = node.ExpandedByDefault;
+        foreach (var c in node.Children) CaptureEmailExpansion(c, dict);
+    }
+
     private void BuildTree(List<TicketThread> threads, TreeSortMode mode)
     {
-        Customers.Clear();
+        var list = new List<CustomerGroupViewModel>();
         var supportAddresses = _workflow.Config.MonitoredAddresses;
         var selfAddress = _workflow.Config.ImapUsername;
         var customerGroups = threads
@@ -604,7 +760,10 @@ public class MainViewModel : ViewModelBase
 
         foreach (var cg in orderedCustomers)
         {
-            var customer = new CustomerGroupViewModel(cg.Key);
+            var customer = new CustomerGroupViewModel(cg.Key)
+            {
+                ExpandedByDefault = _vmExpansion.TryGetValue("c:" + cg.Key, out var ce) ? ce : ExpandDepth >= 2
+            };
             var productGroups = cg
                 .GroupBy(t => string.IsNullOrEmpty(t.Product) ? "未分类产品" : t.Product);
 
@@ -616,7 +775,10 @@ public class MainViewModel : ViewModelBase
 
             foreach (var pg in orderedProducts)
             {
-                var product = new ProductGroupViewModel(pg.Key);
+                var product = new ProductGroupViewModel(pg.Key)
+                {
+                    ExpandedByDefault = _vmExpansion.TryGetValue("p:" + pg.Key, out var pe) ? pe : ExpandDepth >= 3
+                };
                 // 同一产品下的所有邮件树一律按最后更新时间倒序（与全局排序模式无关）
                 var orderedThreads = pg.OrderByDescending(t => t.LastActivity);
                 foreach (var t in orderedThreads)
@@ -624,11 +786,266 @@ public class MainViewModel : ViewModelBase
                     // 工单层并入根邮件节点：状态/工单号/总结显示在根邮件上，不再有独立工单行
                     var owner = new ThreadViewModel(t, supportAddresses, selfAddress);
                     foreach (var root in owner.Children)
+                    {
+                        SetEmailExpandDepth(root, ExpandDepth);
                         product.Threads.Add(root);
+                    }
                 }
                 customer.Products.Add(product);
             }
-            Customers.Add(customer);
+            list.Add(customer);
         }
+        ReplaceCustomers(list);
+    }
+
+    /// <summary>递归设置邮件节点默认展开：优先保留重建前用户手动折叠状态，否则按展开层次（仅层次4展开）。</summary>
+    private void SetEmailExpandDepth(EmailNodeViewModel node, int depth)
+    {
+        node.ExpandedByDefault = _vmExpansion.TryGetValue("e:" + node.Email.Id, out var e) ? e : depth >= 4;
+        foreach (var c in node.Children) SetEmailExpandDepth(c, depth);
+    }
+
+    // ================= 同步后增量更新（不重建整棵树，保留折叠层次）=================
+
+    /// <summary>
+    /// 同步后把新线程增量合并进现有树：新增线索插入正确分组、已有线索仅在其邮件数变化时重建该线索子树（保留展开状态）、
+    /// 移除已消失的线索。不重建整棵树，因此用户手动折叠/展开的状态得以保留。
+    /// </summary>
+    public void MergeThreads(List<TicketThread> newThreads)
+    {
+        var support = _workflow.Config.MonitoredAddresses;
+        var self = _workflow.Config.ImapUsername;
+
+        // 合并/排序可能替换或移动选中节点：用稳定标识（邮件 Id / 线索根邮件 Id）保存选中，合并后恢复
+        var selEmailId = SelectedEmail?.Email.Id ?? 0;
+        var selThreadRootId = SelectedThread?.Children.FirstOrDefault(c => c.IsRoot)?.Email.Id ?? 0;
+
+        var newRootIds = new HashSet<long>();
+        foreach (var t in newThreads)
+            if (GetRootEmail(t) is { } r) newRootIds.Add(r.Id);
+
+        // 1. 移除已消失的线索（并清理空分组）
+        foreach (var cust in Customers.ToList())
+            foreach (var prod in cust.Products.ToList())
+                foreach (var root in prod.Threads.ToList())
+                    if (!newRootIds.Contains(root.Email.Id))
+                        prod.Threads.Remove(root);
+        foreach (var cust in Customers.ToList())
+            foreach (var prod in cust.Products.ToList())
+                if (prod.Threads.Count == 0) cust.Products.Remove(prod);
+        foreach (var cust in Customers.ToList())
+            if (cust.Products.Count == 0) Customers.Remove(cust);
+
+        // 2. 插入新线索 / 更新已有线索
+        foreach (var t in newThreads)
+        {
+            var rootEmail = GetRootEmail(t);
+            if (rootEmail == null) continue;
+            var existing = FindRootNode(rootEmail.Id);
+            if (existing == null)
+                InsertNewThread(t, support, self);
+            else if (existing.ThreadOwner.Thread.EmailCount != t.EmailCount)
+                UpdateExistingThread(existing, t, support, self);
+        }
+
+        // 3. 恢复选中（节点可能被替换/移动，用稳定标识重新定位）
+        RestoreSelectionAfterMerge(selEmailId, selThreadRootId);
+        SelectionRestoredAfterMerge?.Invoke(); // 通知主窗口在 TreeView 中同步高亮选中
+    }
+
+    /// <summary>合并后按稳定标识恢复选中：优先选中的邮件，其次选中的线索（根邮件）。</summary>
+    private void RestoreSelectionAfterMerge(long emailId, long threadRootId)
+    {
+        if (emailId > 0 && FindEmailNodeById(emailId) is { } node)
+        {
+            SelectedEmail = node;
+            SelectedThread = node.ThreadOwner;
+            return;
+        }
+        if (threadRootId > 0 && FindRootNode(threadRootId) is { } root)
+        {
+            SelectedEmail = root;
+            SelectedThread = root.ThreadOwner;
+        }
+    }
+
+    /// <summary>在整棵树中按邮件 Id 查找节点（含非根邮件）。</summary>
+    private EmailNodeViewModel? FindEmailNodeById(long emailId)
+    {
+        foreach (var cust in Customers)
+            foreach (var prod in cust.Products)
+                foreach (var root in prod.Threads)
+                    if (FindInSubtree(root, emailId) is { } n)
+                        return n;
+        return null;
+    }
+
+    private static EmailNodeViewModel? FindInSubtree(EmailNodeViewModel node, long emailId)
+    {
+        if (node.Email.Id == emailId) return node;
+        foreach (var c in node.Children)
+            if (FindInSubtree(c, emailId) is { } n) return n;
+        return null;
+    }
+
+    /// <summary>线索的首邮件（根邮件）。</summary>
+    private static EmailMessage? GetRootEmail(TicketThread t)
+    {
+        if (t.DisplayRoots.Count > 0) return t.DisplayRoots[0].Email;
+        return t.Emails.OrderBy(e => e.DateSent).FirstOrDefault();
+    }
+
+    /// <summary>在现有树中按根邮件 Id 查找线索根节点。</summary>
+    private EmailNodeViewModel? FindRootNode(long rootEmailId)
+    {
+        foreach (var cust in Customers)
+            foreach (var prod in cust.Products)
+                foreach (var root in prod.Threads)
+                    if (root.IsRoot && root.Email.Id == rootEmailId)
+                        return root;
+        return null;
+    }
+
+    /// <summary>把新线索插入正确分组（客户/产品分组不存在则创建，保持排序）。</summary>
+    private void InsertNewThread(TicketThread t, IReadOnlyList<string> support, string self)
+    {
+        var enterprise = string.IsNullOrEmpty(t.Enterprise) ? "未分类客户" : t.Enterprise;
+        var productName = string.IsNullOrEmpty(t.Product) ? "未分类产品" : t.Product;
+
+        var cust = Customers.FirstOrDefault(c => c.Name == enterprise);
+        if (cust == null)
+        {
+            cust = new CustomerGroupViewModel(enterprise) { ExpandedByDefault = ExpandDepth >= 2 };
+            InsertCustomerSorted(cust);
+        }
+        var prod = cust.Products.FirstOrDefault(p => p.Name == productName);
+        if (prod == null)
+        {
+            prod = new ProductGroupViewModel(productName) { ExpandedByDefault = ExpandDepth >= 3 };
+            InsertProductSorted(cust, prod);
+        }
+        var owner = new ThreadViewModel(t, support, self);
+        foreach (var root in owner.Children)
+        {
+            SetEmailExpandDepth(root, ExpandDepth);
+            InsertThreadSorted(prod, root);
+        }
+        // 新线索的 LastActivity 可能改变所属 产品/客户 分组的 Max(LastActivity) 排序
+        if (owner.Children.Count > 0) ReinsertThread(owner.Children[0]);
+    }
+
+    /// <summary>已有线索邮件数变化：重建该线索子树并迁移展开状态（保留折叠层次）。</summary>
+    private void UpdateExistingThread(EmailNodeViewModel existingRoot, TicketThread t, IReadOnlyList<string> support, string self)
+    {
+        var expansion = new Dictionary<long, bool>();
+        CaptureEmailExpansionById(existingRoot, expansion);
+
+        var prod = FindProductOf(existingRoot);
+        if (prod == null) return;
+        var idx = prod.Threads.IndexOf(existingRoot);
+        if (idx < 0) return;
+
+        var owner = new ThreadViewModel(t, support, self);
+        foreach (var newRoot in owner.Children)
+            MigrateEmailExpansion(newRoot, expansion);
+
+        foreach (var newRoot in owner.Children)
+            prod.Threads.Insert(idx, newRoot);
+        prod.Threads.RemoveAt(idx + owner.Children.Count);
+
+        // 新邮件更新了 LastActivity：按时间重新排线索，并重排所属 产品/客户 分组（Max(LastActivity) 可能变化）
+        var firstRoot = owner.Children.FirstOrDefault();
+        if (firstRoot != null) ReinsertThread(firstRoot);
+    }
+
+    /// <summary>按 LastActivity 重新定位线索，并对其所属 产品/客户 分组按 Max(LastActivity) 重新排序。</summary>
+    private void ReinsertThread(EmailNodeViewModel root)
+    {
+        var prod = FindProductOf(root);
+        if (prod == null) return;
+        var cust = FindCustomerOf(prod);
+        // 线索在产品内按 LastActivity 倒序重排
+        prod.Threads.Remove(root);
+        InsertThreadSorted(prod, root);
+        // 产品在客户下按 Max(LastActivity) 重排
+        if (cust != null)
+        {
+            cust.Products.Remove(prod);
+            InsertProductSorted(cust, prod);
+            // 客户在顶层按 Max(LastActivity) 重排
+            Customers.Remove(cust);
+            InsertCustomerSorted(cust);
+        }
+    }
+
+    private CustomerGroupViewModel? FindCustomerOf(ProductGroupViewModel prod)
+    {
+        foreach (var cust in Customers)
+            if (cust.Products.Contains(prod))
+                return cust;
+        return null;
+    }
+
+    private static void CaptureEmailExpansionById(EmailNodeViewModel node, Dictionary<long, bool> dict)
+    {
+        dict[node.Email.Id] = node.ExpandedByDefault;
+        foreach (var c in node.Children) CaptureEmailExpansionById(c, dict);
+    }
+
+    private static void MigrateEmailExpansion(EmailNodeViewModel node, Dictionary<long, bool> expansion)
+    {
+        if (expansion.TryGetValue(node.Email.Id, out var e)) node.ExpandedByDefault = e;
+        foreach (var c in node.Children) MigrateEmailExpansion(c, expansion);
+    }
+
+    private ProductGroupViewModel? FindProductOf(EmailNodeViewModel root)
+    {
+        foreach (var cust in Customers)
+            foreach (var prod in cust.Products)
+                if (prod.Threads.Contains(root))
+                    return prod;
+        return null;
+    }
+
+    private void InsertThreadSorted(ProductGroupViewModel prod, EmailNodeViewModel root)
+    {
+        var last = root.ThreadOwner.Thread.LastActivity;
+        int i = 0;
+        while (i < prod.Threads.Count && prod.Threads[i].ThreadOwner.Thread.LastActivity > last) i++;
+        prod.Threads.Insert(i, root);
+    }
+
+    private void InsertCustomerSorted(CustomerGroupViewModel cust)
+    {
+        int i = 0;
+        if (_sortMode == TreeSortMode.Time)
+        {
+            while (i < Customers.Count &&
+                   Customers[i].Products.Count > 0 &&
+                   Customers[i].Products.Max(p => p.Threads.Count > 0 ? p.Threads.Max(t => t.ThreadOwner.Thread.LastActivity) : DateTimeOffset.MinValue) > cust.Products.Max(p => p.Threads.Count > 0 ? p.Threads.Max(t => t.ThreadOwner.Thread.LastActivity) : DateTimeOffset.MinValue))
+                i++;
+        }
+        else
+        {
+            while (i < Customers.Count && string.Compare(Customers[i].Name, cust.Name, StringComparison.Ordinal) < 0) i++;
+        }
+        Customers.Insert(i, cust);
+    }
+
+    private void InsertProductSorted(CustomerGroupViewModel cust, ProductGroupViewModel prod)
+    {
+        int i = 0;
+        if (_sortMode == TreeSortMode.Time)
+        {
+            while (i < cust.Products.Count &&
+                   cust.Products[i].Threads.Count > 0 &&
+                   cust.Products[i].Threads.Max(t => t.ThreadOwner.Thread.LastActivity) > prod.Threads.Max(t => t.ThreadOwner.Thread.LastActivity))
+                i++;
+        }
+        else
+        {
+            while (i < cust.Products.Count && string.Compare(cust.Products[i].Name, prod.Name, StringComparison.Ordinal) < 0) i++;
+        }
+        cust.Products.Insert(i, prod);
     }
 }

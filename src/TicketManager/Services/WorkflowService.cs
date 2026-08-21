@@ -12,6 +12,7 @@ public class WorkflowService
     private readonly DatabaseService _db;
     private AppConfig _config = new();
     private readonly SemaphoreSlim _syncLock = new(1, 1); // 串行化同步，避免手动与自动同步并发
+    private readonly SemaphoreSlim _rebuildLock = new(1, 1); // 串行化线程重建（DB 写），避免后台同步与手工设置/清空等并发覆盖
 
     public WorkflowService(DatabaseService db) => _db = db;
 
@@ -63,9 +64,11 @@ public class WorkflowService
 
     public void SaveConfig(AppConfig c)
     {
-        // 记录旧的关注邮箱/首次同步天数，用于判断是否变化
-        var oldMonitored = _config.MonitoredAddresses;
-        var oldFirstSyncDays = _config.FirstSyncDays;
+        // 从数据库读取旧的关注邮箱/首次同步天数，用于判断是否变化：
+        // 不能用内存 _config 判断——SettingsViewModel 持有同一对象引用，保存前已原地改成新值，
+        // 会导致“关注邮箱变化→重置游标”永远不触发（新增关注邮箱后拉不到其历史邮件）。
+        var oldMonitored = SplitList(_db.GetSetting("monitored_addresses"));
+        var oldFirstSyncDays = IntOr(_db.GetSetting("first_sync_days"), 7);
         _db.SetSetting("imap_host", c.ImapHost);
         _db.SetSetting("imap_port", c.ImapPort.ToString());
         _db.SetSetting("imap_ssl", c.ImapUseSsl.ToString());
@@ -291,6 +294,9 @@ public class WorkflowService
                 if (!fullScan && recv <= cursor) { stop = true; break; }   // 增量：到达上次同步点
                 if (fullScan && !WithinWindow(recv)) { stop = true; break; } // 全量：超出时间窗口
                 scanned++;
+                // 先判断是否属于关注的邮箱，再看本地是否已下载：
+                // 新增关注邮箱后全量重扫时，能重新拉取其相关且未下载的邮件
+                if (!IsMonitoredSummary(m)) continue;
                 if (_db.EmailExistsByZohoId(folder.Name, m.MessageId.ToString()))
                     continue;                                                // 已下载，跳过
                 toDownload.Add(m);
@@ -350,6 +356,28 @@ public class WorkflowService
         participants.AddRange(SplitList(e.CcAddresses));
         return _config.MonitoredAddresses.Any(m =>
             participants.Any(p => string.Equals(p, m, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    /// <summary>列表摘要中 发件人/收件人/抄送 任一命中关注客服邮箱即纳入（下载前用邮件头预判）。</summary>
+    private bool IsMonitoredSummary(ZohoMessageSummary m)
+    {
+        if (_config.MonitoredAddresses.Count == 0) return true;
+        var participants = new List<string> { m.FromAddress };
+        foreach (var a in ExtractAddressesFromString(m.ToAddress)) participants.Add(a);
+        foreach (var a in ExtractAddressesFromString(m.CcAddress)) participants.Add(a);
+        return _config.MonitoredAddresses.Any(addr =>
+            participants.Any(p => string.Equals(p, addr, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    /// <summary>从地址串中提取所有邮箱地址（Zoho 的 to/cc 常带姓名与 HTML 编码）。</summary>
+    private static IEnumerable<string> ExtractAddressesFromString(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s) || s.Equals("Not Provided", StringComparison.OrdinalIgnoreCase))
+            yield break;
+        s = System.Net.WebUtility.HtmlDecode(s);
+        foreach (System.Text.RegularExpressions.Match x in
+            System.Text.RegularExpressions.Regex.Matches(s, @"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"))
+            yield return x.Value;
     }
 
     /// <summary>判断是否为可自动重试的网络类错误（连接中断/超时/协议断开）。认证失败、用户取消除外。</summary>
@@ -427,12 +455,20 @@ public class WorkflowService
 
     public void RebuildThreads()
     {
-        ReparseSubjects();
-        var all = _db.LoadAllEmails();
-        var threads = new ThreadBuilder().Build(all);
-        _db.PersistThreads(threads);
-        // 每个线程的首封邮件保留原主题，不做 AI 提炼
-        _db.ClearFirstEmailTitles();
+        _rebuildLock.Wait();
+        try
+        {
+            ReparseSubjects();
+            var all = _db.LoadAllEmails();
+            var threads = new ThreadBuilder().Build(all);
+            _db.PersistThreads(threads);
+            // 每个线程的首封邮件保留原主题，不做 AI 提炼
+            _db.ClearFirstEmailTitles();
+        }
+        finally
+        {
+            _rebuildLock.Release();
+        }
     }
 
     /// <summary>对库中所有邮件重新解析主题，补齐 工单号/产品/客户/故障 字段（幂等）。</summary>
@@ -657,7 +693,9 @@ public class WorkflowService
     /// <summary>按线程批量设置 产品/客户（只覆盖非空字段）。</summary>
     public void SetThreadMeta(long threadId, string product, string enterprise)
         => _db.SetThreadMeta(threadId, product, enterprise);
-
+    /// <summary>按根邮件 Id 定位线程并设置 产品/客户（根邮件 Id 稳定，线程重建后 ThreadId 会变）。</summary>
+    public void SetThreadMetaByRootEmail(long rootEmailId, string product, string enterprise)
+        => _db.SetThreadMetaByRootEmail(rootEmailId, product, enterprise);
     /// <summary>手工指定某封邮件及其同线程其他邮件（其余只填空缺）的 产品/客户，使整棵线程归位。</summary>
     public void SetEmailMeta(long id, string product, string enterprise)
     {
@@ -665,26 +703,51 @@ public class WorkflowService
         RebuildThreads();
     }
 
-    /// <summary>手工设置线程状态（清空 AI 总结，避免与状态矛盾）。</summary>
-    public void SetThreadStatus(long threadId, string status)
+    /// <summary>手工设置线程状态（记录理由，清空 AI 总结，避免与状态矛盾）。</summary>
+    public void SetThreadStatus(long threadId, string status, string reason = "")
     {
-        _db.UpdateThreadStatus(threadId, status, "");
+        _db.UpdateThreadStatus(threadId, status, "", reason);
     }
+
+    /// <summary>按根邮件 Id 定位线程并手工设置状态/理由（根邮件 Id 稳定，线程重建后 ThreadId 会变）。</summary>
+    public void SetThreadStatusByRootEmail(long rootEmailId, string status, string reason = "")
+        => _db.UpdateThreadStatusByRootEmail(rootEmailId, status, "", reason);
+
+    /// <summary>清除所有“新同步”标记（用户已查看/跳转后调用）。</summary>
+    public void MarkEmailsSeen() => _db.MarkEmailsSeen();
+
+    /// <summary>清除单封邮件的新同步标记（点击查看后即已读）。</summary>
+    public void MarkEmailSeen(long id) => _db.MarkEmailSeen(id);
+
+    /// <summary>把指定线索内的所有新同步邮件标记为已读。</summary>
+    public void MarkThreadSeen(long threadId) => _db.MarkThreadSeen(threadId);
+
+    /// <summary>所有含新同步邮件的线索 Id（去重），用于根线索高亮与跳转。</summary>
+    public HashSet<long> GetNewThreadIds() => _db.GetNewThreadIds();
 
     /// <summary>立即用 AI 为指定线程重新生成状态与总结，返回 (状态, 总结)；失败返回 null。</summary>
     public async Task<(string Status, string Summary)?> RegenerateThreadStatusAsync(
-        long threadId, IProgress<string>? progress = null, CancellationToken ct = default)
+        long rootEmailId, IProgress<string>? progress = null, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(_config.DeepSeekApiKey)) return null;
-        var thread = _db.LoadThreads().FirstOrDefault(t => t.Id == threadId);
+        var tid = _db.ResolveThreadId(rootEmailId);
+        if (tid <= 0) return null;
+        var thread = _db.LoadThreads().FirstOrDefault(t => t.Id == tid);
         if (thread == null) return null;
         using var ai = new DeepSeekService(_config);
         var r = await ai.SummarizeThreadAsync(thread);
         if (r == null) return null;
-        _db.UpdateThreadStatus(thread.Id, r.Value.Status, r.Value.Summary);
+        _db.UpdateThreadStatus(tid, r.Value.Status, r.Value.Summary, ""); // AI 采纳，清空手工理由
         progress?.Report("正在总结工单状态…");
         return r;
     }
+
+    /// <summary>读取上次设置的“展开层次”（1-4，默认 3：线索首邮件）。</summary>
+    public int GetExpandDepth()
+        => int.TryParse(_db.GetSetting("expand_depth"), out var v) && v is >= 1 and <= 4 ? v : 3;
+
+    /// <summary>持久化“展开层次”设置（重启后保留）。</summary>
+    public void SetExpandDepth(int depth) => _db.SetSetting("expand_depth", depth.ToString());
 
     public List<TicketThread> LoadThreads()
     {
@@ -694,8 +757,13 @@ public class WorkflowService
         var emails = _db.LoadAllEmails();
         var displayByThread = new ThreadBuilder().BuildDisplayByThread(emails);
         foreach (var t in threads)
+        {
             if (displayByThread.TryGetValue(t.Id, out var roots))
                 t.DisplayRoots = roots;
+            // 让 t.Emails 与 DisplayRoots 共享同一批 EmailMessage 对象：
+            // 否则点击清除某封邮件的 IsNew 不会反映到 HasNewMail（根线索加粗不消失）
+            t.Emails = emails.Where(e => e.ThreadId == t.Id).OrderBy(e => e.DateSent).ToList();
+        }
         return threads;
     }
 
@@ -745,9 +813,19 @@ public class WorkflowService
         var tasks = pending.Select(async t =>
         {
             ct.ThrowIfCancellationRequested();
-            var r = await ai.SummarizeThreadAsync(t);
+            // 已总结过的线程（本次只是有新邮件）：只提交新增邮件 + 上次总结作为上下文，
+            // 避免把同线索中的其他邮件重复提交给 AI
+            IReadOnlyList<EmailMessage>? focus = null;
+            string? prevSummary = null;
+            if (!string.IsNullOrEmpty(t.Status))
+            {
+                focus = t.Emails.Where(e => e.DateReceived > lastSummarized).ToList();
+                prevSummary = t.StatusSummary;
+                if (focus.Count == 0) focus = null;
+            }
+            var r = await ai.SummarizeThreadAsync(t, focus, prevSummary);
             if (r != null)
-                _db.UpdateThreadStatus(t.Id, r.Value.Status, r.Value.Summary);
+                _db.UpdateThreadStatus(t.Id, r.Value.Status, r.Value.Summary, "");
             var d = Interlocked.Increment(ref done);
             progress?.Report($"正在总结工单状态… {d}/{pending.Count}");
         });

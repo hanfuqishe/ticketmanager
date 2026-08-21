@@ -4,6 +4,10 @@
         Title="设置" Height="560" Width="680"
         WindowStartupLocation="CenterOwner" FontFamily="Microsoft YaHei UI" FontSize="13"
         ResizeMode="CanResize">
+    <Window.Resources>
+        <StreamGeometry x:Key="IconEmail">M20,4H4C2.9,4 2,4.9 2,6V18C2,19.1 2.9,20 4,20H20C21.1,20 22,19.1 22,18V6C22,4.9 21.1,4 20,4M20,8L12,13L4,8V6L12,11L20,6V8Z</StreamGeometry>
+        <StreamGeometry x:Key="IconDoc">M13,9H18.5L13,3.5V9M6,2H14L20,8V20A2,2 0 0,1 18,22H6C4.89,22 4,21.1 4,20V4C4,2.89 4.89,2 6,2M15,18V16H6V18H15M18,14V12H6V14H18Z</StreamGeometry>
+    </Window.Resources>
     <DockPanel Margin="14">
         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <Button Content="保存" Width="90" Padding="8,4" Click="Save_Click" IsDefault="True"/>
@@ -51,7 +55,7 @@
                         <ListBox.ItemTemplate>
                             <DataTemplate>
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="✉ " Foreground="#2b7de9"/>
+                                    <Path Data="{StaticResource IconEmail}" Fill="#2B7DE9" Width="13" Height="13" Stretch="Uniform" VerticalAlignment="Center"/>
                                     <TextBlock Text="{Binding}"/>
                                 </StackPanel>
                             </DataTemplate>
@@ -176,36 +180,99 @@
             </TabItem>
             <!-- ===== Zoho REST API ===== -->
             <TabItem Header="Zoho REST API">
-                <StackPanel Margin="16">
-                    <StackPanel Orientation="Horizontal" Margin="0,6">
-                        <TextBlock Text="API 地址：" Width="110" VerticalAlignment="Center"/>
-                        <TextBox Text="{Binding Config.ZohoApiBase}" Width="280" Padding="4"/>
+                <Grid Margin="16">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- 凭据输入区 -->
+                    <StackPanel Grid.Row="0">
+                        <StackPanel Orientation="Horizontal" Margin="0,4">
+                            <TextBlock Text="API 地址：" Width="110" VerticalAlignment="Center"/>
+                            <TextBox Text="{Binding Config.ZohoApiBase}" Width="280" Padding="4"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,4">
+                            <TextBlock Text="Client ID：" Width="110" VerticalAlignment="Center"/>
+                            <PasswordBox x:Name="ZohoClientIdBox" Width="280" Padding="4"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,4">
+                            <TextBlock Text="Client Secret：" Width="110" VerticalAlignment="Center"/>
+                            <PasswordBox x:Name="ZohoClientSecretBox" Width="280" Padding="4"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,4">
+                            <TextBlock Text="Refresh Token：" Width="110" VerticalAlignment="Center"/>
+                            <PasswordBox x:Name="ZohoRefreshTokenBox" Width="280" Padding="4"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,4">
+                            <TextBlock Text="Account ID：" Width="110" VerticalAlignment="Center"/>
+                            <TextBox Text="{Binding Config.ZohoAccountId}" Width="280" Padding="4"/>
+                            <TextBlock Text="留空自动获取" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="Gray" FontSize="11"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <Button Content="测试连接" Padding="16,4" Click="TestZoho_Click"/>
+                            <TextBlock x:Name="ZohoTestText" VerticalAlignment="Center" Margin="12,0,0,0"
+                                       TextWrapping="Wrap" MaxWidth="440" Foreground="#333"/>
+                        </StackPanel>
                     </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,6">
-                        <TextBlock Text="Client ID：" Width="110" VerticalAlignment="Center"/>
-                        <PasswordBox x:Name="ZohoClientIdBox" Width="280" Padding="4"/>
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,6">
-                        <TextBlock Text="Client Secret：" Width="110" VerticalAlignment="Center"/>
-                        <PasswordBox x:Name="ZohoClientSecretBox" Width="280" Padding="4"/>
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,6">
-                        <TextBlock Text="Refresh Token：" Width="110" VerticalAlignment="Center"/>
-                        <PasswordBox x:Name="ZohoRefreshTokenBox" Width="280" Padding="4"/>
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,6">
-                        <TextBlock Text="Account ID：" Width="110" VerticalAlignment="Center"/>
-                        <TextBox Text="{Binding Config.ZohoAccountId}" Width="280" Padding="4"/>
-                        <TextBlock Text="留空自动获取" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="Gray" FontSize="11"/>
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                        <Button Content="测试连接" Padding="16,4" Click="TestZoho_Click"/>
-                        <TextBlock x:Name="ZohoTestText" VerticalAlignment="Center" Margin="12,0,0,0"
-                                   TextWrapping="Wrap" MaxWidth="430" Foreground="#333"/>
-                    </StackPanel>
-                    <TextBlock Margin="0,14,0,0" Foreground="#888" FontSize="11" TextWrapping="Wrap"
-                               Text="需先在 Zoho API Console 创建 Self Client 并生成 Refresh Token（Scope：ZohoMail.accounts.READ,ZohoMail.folders.READ,ZohoMail.messages.READ，线程信息由 messages.READ 返回）。详细步骤见 docs/zoho-rest-api.md。这些凭据为敏感信息，将以系统加密方式存储。"/>
-                </StackPanel>
+
+                    <!-- 分步骤配置说明（含可点击链接） -->
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,14,0,0">
+                        <Border BorderBrush="#dce6f0" BorderThickness="1" CornerRadius="6" Padding="14" Background="#f8fafc">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <Path Data="{StaticResource IconDoc}" Fill="#009688" Width="16" Height="16" Stretch="Uniform" VerticalAlignment="Center"/>
+                                    <TextBlock Text="配置步骤（只需一次，蓝色文字可点击打开）" FontWeight="Bold" FontSize="14" Foreground="#1f3a5f" Margin="6,0,0,0"/>
+                                </StackPanel>
+
+                                <TextBlock Text="① 创建客户端，获取 Client ID / Client Secret" FontWeight="Bold" Margin="0,12,0,0"/>
+                                <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,4,0,0">
+                                    <Run Text="打开　"/>
+                                    <Hyperlink NavigateUri="https://api-console.zoho.com/" RequestNavigate="Link_RequestNavigate">Zoho API Console（点此打开）</Hyperlink>
+                                    <Run Text="　并用 Zoho 账号登录 → 右上角 ADD CLIENT → 类型选 Self Client → CREATE。创建后复制页面上的 "/><Run Text="Client ID"/><Run Text=" 和 "/><Run Text="Client Secret"/><Run Text="。"/>
+                                </TextBlock>
+
+                                <TextBlock Text="② 生成 Refresh Token（长期有效）" FontWeight="Bold" Margin="0,12,0,0"/>
+                                <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,4,0,0">
+                                    <Run Text="在客户端页面点击 Generate Token，把下面这行 Scope 粘贴进去（逗号分隔）→ 生成 → 复制 "/><Run Text="Refresh Token"/><Run Text="（线程信息由 messages.READ 自动返回，无需单独申请）："/>
+                                </TextBlock>
+                                <DockPanel Margin="0,6,0,0">
+                                    <Button DockPanel.Dock="Right" Content="复制" Padding="14,4" Margin="8,0,0,0"
+                                            VerticalAlignment="Center" Click="CopyScope_Click"
+                                            ToolTip="把 Scope 复制到剪贴板"/>
+                                    <TextBox Text="ZohoMail.accounts.READ,ZohoMail.folders.READ,ZohoMail.messages.READ"
+                                             IsReadOnly="True" FontFamily="Consolas" Foreground="#1f3a5f"
+                                             TextWrapping="Wrap" Padding="6"
+                                             Background="#eef2f7" BorderBrush="#c8d4e0"
+                                             ToolTip="可选中复制，或点右侧「复制」按钮"/>
+                                </DockPanel>
+
+                                <TextBlock Text="③ 填入本页并测试连接" FontWeight="Bold" Margin="0,12,0,0"/>
+                                <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,4,0,0">
+                                    <Run Text="把上一步的 "/><Run Text="Client ID"/><Run Text="、"/><Run Text="Client Secret"/><Run Text="、"/><Run Text="Refresh Token"/><Run Text=" 填入上方；API 地址用 "/><Hyperlink NavigateUri="https://mail.zoho.com/api" RequestNavigate="Link_RequestNavigate">https://mail.zoho.com/api</Hyperlink><Run Text="（美国数据中心）；Account ID 留空即可自动获取。最后点击 "/><Run Text="测试连接"/><Run Text=" 验证凭据是否可用。"/>
+                                </TextBlock>
+
+                                <TextBlock Text="④ 数据中心（与你的 Zoho 区域一致）" FontWeight="Bold" Margin="0,12,0,0"/>
+                                <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,4,0,0">
+                                    <Run Text="美国：认证　"/>
+                                    <Hyperlink NavigateUri="https://accounts.zoho.com" RequestNavigate="Link_RequestNavigate">accounts.zoho.com</Hyperlink>
+                                    <Run Text="　　　API　"/>
+                                    <Hyperlink NavigateUri="https://mail.zoho.com/api" RequestNavigate="Link_RequestNavigate">https://mail.zoho.com/api</Hyperlink>
+                                </TextBlock>
+                                <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,2,0,0">
+                                    <Run Text="中国：认证　"/>
+                                    <Hyperlink NavigateUri="https://accounts.zoho.com.cn" RequestNavigate="Link_RequestNavigate">accounts.zoho.com.cn</Hyperlink>
+                                    <Run Text="　　　API　"/>
+                                    <Hyperlink NavigateUri="https://mail.zoho.com.cn/api" RequestNavigate="Link_RequestNavigate">https://mail.zoho.com.cn/api</Hyperlink>
+                                </TextBlock>
+
+                                <TextBlock TextWrapping="Wrap" LineHeight="20" Margin="0,14,0,0" Foreground="#888" FontSize="11">
+                                    <Run Text="安全提示：Client ID / Secret / Refresh Token 属敏感信息，程序会用 Windows DPAPI 加密存储，请勿提交到代码仓库。"/>
+                                </TextBlock>
+                            </StackPanel>
+                        </Border>
+                    </ScrollViewer>
+                </Grid>
             </TabItem>
         </TabControl>
     </DockPanel>

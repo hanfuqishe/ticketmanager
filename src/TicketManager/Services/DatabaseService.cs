@@ -67,7 +67,8 @@ public class DatabaseService : IDisposable
                 TicketNumber TEXT NOT NULL DEFAULT '',
                 Product TEXT NOT NULL DEFAULT '',
                 Enterprise TEXT NOT NULL DEFAULT '',
-                FaultDescription TEXT NOT NULL DEFAULT ''
+                FaultDescription TEXT NOT NULL DEFAULT '',
+                IsNew INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS IX_Emails_MessageId ON Emails(MessageId);
             CREATE INDEX IF NOT EXISTS IX_Emails_ThreadId ON Emails(ThreadId);
@@ -79,6 +80,7 @@ public class DatabaseService : IDisposable
                 Enterprise TEXT NOT NULL DEFAULT '',
                 Status TEXT NOT NULL DEFAULT '',
                 StatusSummary TEXT NOT NULL DEFAULT '',
+                StatusReason TEXT NOT NULL DEFAULT '',
                 FirstActivity TEXT NOT NULL DEFAULT '',
                 LastActivity TEXT NOT NULL DEFAULT ''
             );
@@ -93,6 +95,12 @@ public class DatabaseService : IDisposable
             conn.Execute("ALTER TABLE Emails ADD COLUMN ZohoThreadId INTEGER NOT NULL DEFAULT 0");
         if (!emailCols.Contains("Translation"))
             conn.Execute("ALTER TABLE Emails ADD COLUMN Translation TEXT NOT NULL DEFAULT ''");
+        if (!emailCols.Contains("IsNew"))
+            conn.Execute("ALTER TABLE Emails ADD COLUMN IsNew INTEGER NOT NULL DEFAULT 0");
+        var threadCols = new HashSet<string>(conn.Query<string>(
+            "SELECT name FROM pragma_table_info('Threads')"));
+        if (!threadCols.Contains("StatusReason"))
+            conn.Execute("ALTER TABLE Threads ADD COLUMN StatusReason TEXT NOT NULL DEFAULT ''");
     }
 
     // ================= Settings =================
@@ -198,10 +206,10 @@ public class DatabaseService : IDisposable
         e.Id = conn.ExecuteScalar<long>("""
             INSERT INTO Emails (Folder, Uid, MessageId, InReplyTo, "References", ZohoMessageId, ZohoThreadId,
                 FromAddress, FromName, ToAddresses, CcAddresses, Subject, AiTitle, DateSent, DateReceived,
-                BodyText, ContentHash, TicketNumber, Product, Enterprise, FaultDescription)
+                BodyText, ContentHash, TicketNumber, Product, Enterprise, FaultDescription, IsNew)
             VALUES (@Folder, @Uid, @MessageId, @InReplyTo, @References, @ZohoMessageId, @ZohoThreadId,
                 @FromAddress, @FromName, @ToAddresses, @CcAddresses, @Subject, @AiTitle, @DateSent, @DateReceived,
-                @BodyText, @ContentHash, @TicketNumber, @Product, @Enterprise, @FaultDescription);
+                @BodyText, @ContentHash, @TicketNumber, @Product, @Enterprise, @FaultDescription, 1);
             SELECT last_insert_rowid();
             """, p);
         return e.Id;
@@ -302,6 +310,26 @@ public class DatabaseService : IDisposable
         tx.Commit();
     }
 
+    /// <summary>
+    /// 按根邮件 Id 定位线程并设置 产品/客户（根邮件 Id 稳定，不随线程重建变化）。
+    /// 线程重建后 ThreadId 会重新分配，界面里的 ThreadId 可能已过期，因此先按根邮件 Id 查实时 ThreadId 再更新该线程全部邮件。
+    /// </summary>
+    public void SetThreadMetaByRootEmail(long rootEmailId, string? product, string? enterprise)
+    {
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+        var tid = conn.ExecuteScalar<long>(
+            "SELECT ThreadId FROM Emails WHERE Id=@id", new { id = rootEmailId }, tx);
+        if (tid > 0)
+        {
+            if (!string.IsNullOrEmpty(product))
+                conn.Execute("UPDATE Emails SET Product=@product WHERE ThreadId=@tid", new { product, tid }, tx);
+            if (!string.IsNullOrEmpty(enterprise))
+                conn.Execute("UPDATE Emails SET Enterprise=@enterprise WHERE ThreadId=@tid", new { enterprise, tid }, tx);
+        }
+        tx.Commit();
+    }
+
     /// <summary>每个线程最早的一封（树的首封/根）不做 AI 提炼，返回这些邮件的 Id 集合。</summary>
     public HashSet<long> GetFirstEmailIdsPerThread()
     {
@@ -344,13 +372,13 @@ public class DatabaseService : IDisposable
         using var conn = Open();
         using var tx = conn.BeginTransaction();
 
-        // 重建前保留已有线程的 AI 状态/总结，避免手工设置产品/客户等重建后丢失
-        var old = new Dictionary<string, (string Status, string Summary)>(StringComparer.OrdinalIgnoreCase);
-        foreach (var r in conn.Query("SELECT TicketNumber, Status, StatusSummary FROM Threads"))
+        // 重建前保留已有线程的 AI 状态/总结/手工理由，避免手工设置产品/客户等重建后丢失
+        var old = new Dictionary<string, (string Status, string Summary, string Reason)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var r in conn.Query("SELECT TicketNumber, Status, StatusSummary, StatusReason FROM Threads"))
         {
             var key = ((string)r.TicketNumber).Trim();
             if (key.Length == 0) continue;
-            old[key] = ((string)r.Status, (string)r.StatusSummary);
+            old[key] = ((string)r.Status, (string)r.StatusSummary, (string)r.StatusReason);
         }
 
         conn.Execute("DELETE FROM Threads", transaction: tx);
@@ -361,14 +389,16 @@ public class DatabaseService : IDisposable
             var hasOld = old.TryGetValue(key, out var prev);
             var status = hasOld ? prev.Status : t.Status;
             var summary = hasOld ? prev.Summary : t.StatusSummary;
+            var reason = hasOld ? prev.Reason : ""; // 保留手工设置的状态理由
             var tid = conn.ExecuteScalar<long>("""
-                INSERT INTO Threads (TicketNumber, Product, Enterprise, Status, StatusSummary, FirstActivity, LastActivity)
-                VALUES (@TicketNumber, @Product, @Enterprise, @Status, @StatusSummary, @FirstActivity, @LastActivity);
+                INSERT INTO Threads (TicketNumber, Product, Enterprise, Status, StatusSummary, StatusReason, FirstActivity, LastActivity)
+                VALUES (@TicketNumber, @Product, @Enterprise, @Status, @StatusSummary, @StatusReason, @FirstActivity, @LastActivity);
                 SELECT last_insert_rowid();
                 """,
                 new
                 {
                     t.TicketNumber, t.Product, t.Enterprise, Status = status, StatusSummary = summary,
+                    StatusReason = reason,
                     FirstActivity = t.FirstActivity.ToString("o"),
                     LastActivity = t.LastActivity.ToString("o")
                 }, tx);
@@ -398,6 +428,7 @@ public class DatabaseService : IDisposable
                 Enterprise = (string)tr.Enterprise,
                 Status = (string)tr.Status,
                 StatusSummary = (string)tr.StatusSummary,
+                StatusReason = (string)tr.StatusReason,
                 FirstActivity = ParseDate((string)tr.FirstActivity),
                 LastActivity = ParseDate((string)tr.LastActivity),
                 Emails = emails.Where(e => e.ThreadId == tid).OrderBy(e => e.DateSent).ToList()
@@ -406,18 +437,87 @@ public class DatabaseService : IDisposable
         return threads.OrderByDescending(t => t.LastActivity).ToList();
     }
 
-    public void UpdateThreadStatus(long threadId, string status, string summary)
+    public void UpdateThreadStatus(long threadId, string status, string summary, string reason = "")
     {
         using var conn = Open();
-        conn.Execute("UPDATE Threads SET Status = @status, StatusSummary = @summary WHERE Id = @threadId",
-            new { threadId, status, summary });
+        conn.Execute("""
+            UPDATE Threads SET Status = @status, StatusSummary = @summary, StatusReason = @reason
+            WHERE Id = @threadId
+            """, new { threadId, status, summary, reason });
+    }
+
+    /// <summary>按根邮件 Id 查该邮件当前所属线程 Id（线程重建后 ThreadId 会变，界面里的可能已过期）。</summary>
+    public long ResolveThreadId(long rootEmailId)
+    {
+        using var conn = Open();
+        return conn.ExecuteScalar<long>("SELECT ThreadId FROM Emails WHERE Id=@id", new { id = rootEmailId });
+    }
+
+    /// <summary>按根邮件 Id 定位线程并更新状态/总结/理由（根邮件 Id 稳定，避免 ThreadId 过期导致更新 0 行）。</summary>
+    public void UpdateThreadStatusByRootEmail(long rootEmailId, string status, string summary, string reason = "")
+    {
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+        var tid = conn.ExecuteScalar<long>(
+            "SELECT ThreadId FROM Emails WHERE Id=@id", new { id = rootEmailId }, tx);
+        if (tid > 0)
+            conn.Execute("""
+                UPDATE Threads SET Status=@status, StatusSummary=@summary, StatusReason=@reason
+                WHERE Id=@tid
+                """, new { tid, status, summary, reason }, tx);
+        tx.Commit();
     }
 
     public void ClearAiData()
     {
         using var conn = Open();
         conn.Execute("UPDATE Emails SET AiTitle = ''");
-        conn.Execute("UPDATE Threads SET Status = '', StatusSummary = ''");
+        conn.Execute("UPDATE Threads SET Status = '', StatusSummary = '', StatusReason = ''");
+    }
+
+    /// <summary>所有标记为“新同步”的邮件 Id。</summary>
+    public List<long> GetNewEmailIds()
+    {
+        using var conn = Open();
+        return conn.Query<long>("SELECT Id FROM Emails WHERE IsNew = 1").ToList();
+    }
+
+    /// <summary>所有标记为“新同步”的邮件所属线索 Id（去重，>0）。</summary>
+    public HashSet<long> GetNewThreadIds()
+    {
+        using var conn = Open();
+        var rows = conn.Query<long>(
+            "SELECT DISTINCT ThreadId FROM Emails WHERE IsNew = 1 AND ThreadId > 0").ToList();
+        return rows.ToHashSet();
+    }
+
+    /// <summary>清除“新同步”标记（用户已查看/跳转后调用）。</summary>
+    public void MarkEmailsSeen()
+    {
+        using var conn = Open();
+        conn.Execute("UPDATE Emails SET IsNew = 0 WHERE IsNew = 1");
+    }
+
+    /// <summary>清除单封邮件的新同步标记（点击查看后即已读）。</summary>
+    public void MarkEmailSeen(long id)
+    {
+        using var conn = Open();
+        conn.Execute("UPDATE Emails SET IsNew = 0 WHERE Id = @id", new { id });
+    }
+
+    /// <summary>把指定线索（ThreadId）内的所有新同步邮件标记为已读（“全部已读”）。</summary>
+    public void MarkThreadSeen(long threadId)
+    {
+        using var conn = Open();
+        conn.Execute("UPDATE Emails SET IsNew = 0 WHERE ThreadId = @threadId AND IsNew = 1", new { threadId });
+    }
+
+    /// <summary>读取线程状态的手工设置理由（无则空串）。</summary>
+    public string GetThreadStatusReason(long threadId)
+    {
+        using var conn = Open();
+        return conn.ExecuteScalar<string>(
+            "SELECT StatusReason FROM Threads WHERE Id = @threadId", new { threadId }) ?? "";
     }
 
     /// <summary>清空下载到本地的邮件与工单，并重置同步游标（保留全部配置）。</summary>
@@ -458,7 +558,8 @@ public class DatabaseService : IDisposable
         TicketNumber = (string)r.TicketNumber,
         Product = (string)r.Product,
         Enterprise = (string)r.Enterprise,
-        FaultDescription = (string)r.FaultDescription
+        FaultDescription = (string)r.FaultDescription,
+        IsNew = (long)r.IsNew != 0
     };
 
     private static DateTimeOffset ParseDate(string s)

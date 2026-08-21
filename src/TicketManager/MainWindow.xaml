@@ -9,9 +9,25 @@
         <KeyBinding Key="S" Modifiers="Control" Command="{Binding SyncCommand}"/>
         <KeyBinding Key="OemComma" Modifiers="Control" Command="{Binding OpenSettingsCommand}"/>
         <KeyBinding Key="Delete" Modifiers="Control+Shift" Command="{Binding ClearDataCommand}"/>
+        <KeyBinding Key="J" Modifiers="Control" Command="{Binding JumpToNewMailCommand}"/>
     </Window.InputBindings>
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <!-- 彩色矢量图标（Material Design Icons 路径，24×24 视图框） -->
+        <StreamGeometry x:Key="IconSync">M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H21V3L17.65,6.35Z</StreamGeometry>
+        <StreamGeometry x:Key="IconStop">M8,8H16V16H8Z</StreamGeometry>
+        <StreamGeometry x:Key="IconDelete">M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z</StreamGeometry>
+        <StreamGeometry x:Key="IconLogout">M16,17V14H9V10H16V7L21,12L16,17M14,2A2,2 0 0,0 12,4V2H4A2,2 0 0,0 2,4V20A2,2 0 0,0 4,22H12V20H4V4H12V2Z</StreamGeometry>
+        <StreamGeometry x:Key="IconCog">M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.66 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11.03L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.21,8.95 2.27,9.22 2.46,9.37L4.57,11.03C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.66 4.57,12.97L2.46,14.63C2.27,14.78 2.21,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.67 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z</StreamGeometry>
+        <StreamGeometry x:Key="IconEmail">M20,4H4C2.9,4 2,4.9 2,6V18C2,19.1 2.9,20 4,20H20C21.1,20 22,19.1 22,18V6C22,4.9 21.1,4 20,4M20,8L12,13L4,8V6L12,11L20,6V8Z</StreamGeometry>
+        <StreamGeometry x:Key="IconInfo">M13,9H11V7H13M13,17H11V11H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z</StreamGeometry>
+        <StreamGeometry x:Key="IconPaperclip">M16.5,6V17.5A4,4 0 0,1 12.5,21.5A4,4 0 0,1 8.5,17.5V5A2.5,2.5 0 0,1 11,2.5A2.5,2.5 0 0,1 13.5,5V15.5A1,1 0 0,1 12.5,16.5A1,1 0 0,1 11.5,15.5V6H10V15.5A2.5,2.5 0 0,0 12.5,18A2.5,2.5 0 0,0 15,15.5V5A4,4 0 0,0 11,1A4,4 0 0,0 7,5V17.5A5.5,5.5 0 0,0 12.5,23A5.5,5.5 0 0,0 18,17.5V6H16.5Z</StreamGeometry>
+        <StreamGeometry x:Key="IconEarth">M17.9,17.39C17.64,16.59 16.89,16 16,16H15V13A1,1 0 0,0 14,12H8V10H10A1,1 0 0,0 11,9V7H13A2,2 0 0,0 15,5V4.59C17.93,5.77 20,8.64 20,12C20,14.08 19.2,15.97 17.9,17.39M11,19.93C7.05,19.44 4,16.08 4,12C4,11.38 4.08,10.78 4.21,10.21L9,15V16A2,2 0 0,0 11,18M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z</StreamGeometry>
+        <StreamGeometry x:Key="IconOffice">M12,7V3H2V21H22V7H12M6,19H4V17H6V19M6,15H4V13H6V15M6,11H4V9H6V11M6,7H4V5H6V7M10,19H8V17H10V19M10,15H8V13H10V15M10,11H8V9H10V11M10,7H8V5H10V7M20,19H12V17H14V15H12V13H14V11H12V9H20V19M18,11H16V13H18V11M18,15H16V17H18V15Z</StreamGeometry>
+        <StreamGeometry x:Key="IconPackage">M20.84,5.61L20.03,4.1C19.75,3.57 19.21,3.28 18.6,3.28H5.4C4.79,3.28 4.25,3.57 3.97,4.1L3.16,5.61C3.05,5.82 3,6.04 3,6.26V7A1,1 0 0,0 4,8H20A1,1 0 0,0 21,7V6.26C21,6.04 20.95,5.82 20.84,5.61M7.5,7H4.81L5.5,5.5H8.27L7.5,7M20,14H16V13.75A1.75,1.75 0 0,0 14.25,12H9.75A1.75,1.75 0 0,0 8,13.75V14H4V19A1,1 0 0,0 5,20H19A1,1 0 0,0 20,19V14M8.5,9.5H15.5V10A0.5,0.5 0 0,1 15,10.5H9A0.5,0.5 0 0,1 8.5,10V9.5Z</StreamGeometry>
+        <StreamGeometry x:Key="IconDoc">M13,9H18.5L13,3.5V9M6,2H14L20,8V20A2,2 0 0,1 18,22H6C4.89,22 4,21.1 4,20V4C4,2.89 4.89,2 6,2M15,18V16H6V18H15M18,14V12H6V14H18Z</StreamGeometry>
+        <StreamGeometry x:Key="IconSearch">M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.44,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.44C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5Z</StreamGeometry>
+        <StreamGeometry x:Key="IconCheck">M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z</StreamGeometry>
 
         <!-- 展开/折叠箭头（三角形，展开时旋转 90° 指向下） -->
         <Style x:Key="TreeExpanderStyle" TargetType="ToggleButton">
@@ -46,7 +62,8 @@
 
         <!-- 树形缩进虚线：每个层级左侧绘制一条贯穿该节点及子树的纵向虚线 -->
         <Style x:Key="TreeViewItemGuideStyle" TargetType="TreeViewItem">
-            <Setter Property="IsExpanded" Value="{Binding ExpandedByDefault}"/>
+            <!-- 双向绑定：用户手动展开/折叠会写回 VM，过滤重建树时才能保留实际折叠层次 -->
+            <Setter Property="IsExpanded" Value="{Binding ExpandedByDefault, Mode=TwoWay}"/>
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="Template">
                 <Setter.Value>
@@ -61,9 +78,12 @@
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
 
-                            <!-- 整行高亮层：横跨两列铺满整行，作为根/悬停/选中的底色 -->
+                            <!-- 整行高亮层：横跨两列铺满整行，作为根/悬停/选中的底色；左侧竖条用于标记选中 -->
                             <Border x:Name="RowBg" Grid.Row="0" Grid.ColumnSpan="2"
-                                    Background="Transparent" SnapsToDevicePixels="True"/>
+                                    Background="Transparent" SnapsToDevicePixels="True">
+                                <Border x:Name="SelBar" Width="3" HorizontalAlignment="Left"
+                                        VerticalAlignment="Stretch" Background="#2b7de9" Visibility="Collapsed"/>
+                            </Border>
 
                             <!-- 纵向虚线：从本节点顶部贯穿到子树底部，展示缩进层级 -->
                             <Line Grid.Row="0" Grid.RowSpan="2" Grid.Column="0"
@@ -102,6 +122,7 @@
                             </Trigger>
                             <Trigger Property="IsSelected" Value="True">
                                 <Setter TargetName="RowBg" Property="Background" Value="#D6E8F7"/>
+                                <Setter TargetName="SelBar" Property="Visibility" Value="Visible"/>
                             </Trigger>
                             <!-- Ctrl/Shift 多选：根线索高亮为深蓝 -->
                             <DataTrigger Binding="{Binding IsMultiSelected}" Value="True">
@@ -137,7 +158,7 @@
 
         <HierarchicalDataTemplate DataType="{x:Type vm:CustomerGroupViewModel}" ItemsSource="{Binding Products}">
             <StackPanel Orientation="Horizontal">
-                <TextBlock Text="🏢" VerticalAlignment="Center"/>
+                <Path Data="{StaticResource IconOffice}" Fill="#E67E22" Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center"/>
                 <TextBlock Text="{Binding Name}" FontWeight="Bold" Margin="6,0,0,0" VerticalAlignment="Center"/>
                 <TextBlock Text="{Binding CountText}" Foreground="Gray" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
             </StackPanel>
@@ -145,7 +166,7 @@
 
         <HierarchicalDataTemplate DataType="{x:Type vm:ProductGroupViewModel}" ItemsSource="{Binding Threads}">
             <StackPanel Orientation="Horizontal">
-                <TextBlock Text="📦" VerticalAlignment="Center"/>
+                <Path Data="{StaticResource IconPackage}" Fill="#8E24AA" Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center"/>
                 <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Margin="6,0,0,0" VerticalAlignment="Center"/>
                 <TextBlock Text="{Binding CountText}" Foreground="Gray" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
             </StackPanel>
@@ -169,6 +190,11 @@
                             <Separator/>
                             <MenuItem Header="恢复 AI 总结" Tag="{Binding}" Click="RegenerateStatus_Click"/>
                         </MenuItem>
+                        <MenuItem Header="全部已读" Tag="{Binding}" Click="MarkThreadSeen_Click">
+                            <MenuItem.Icon>
+                                <Path Data="{StaticResource IconCheck}" Fill="#43A047" Width="15" Height="15" Stretch="Uniform"/>
+                            </MenuItem.Icon>
+                        </MenuItem>
                         <Separator/>
                         <MenuItem Header="设置产品" Tag="{Binding}"/>
                         <MenuItem Header="设置客户" Tag="{Binding}"/>
@@ -183,7 +209,12 @@
                                 Visibility="{Binding IsRoot, Converter={StaticResource BoolToVis}}">
                             <TextBlock Text="{Binding Status}" Foreground="White" FontSize="11"/>
                         </Border>
-                        <TextBlock TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Margin="4,0,0,0">
+                        <Border Background="#E67E22" CornerRadius="3" Padding="4,1" VerticalAlignment="Center" Margin="4,0,0,0"
+                                Visibility="{Binding NewBadgeVisibility}">
+                            <TextBlock Text="NEW" Foreground="White" FontSize="10" FontWeight="Bold"/>
+                        </Border>
+                        <TextBlock TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Margin="4,0,0,0"
+                                   FontWeight="{Binding TitleWeight}">
                             <Run Text="{Binding Badge, Mode=OneWay}" Foreground="#2b7de9" FontWeight="Bold"/>
                             <Run Text="{Binding Title, Mode=OneWay}" Foreground="#202020"/>
                             <Run Text="{Binding SummaryPrefix, Mode=OneWay}" Foreground="{Binding SummaryBrush}" FontWeight="SemiBold"/>
@@ -209,18 +240,58 @@
         <!-- 主菜单 -->
         <Menu DockPanel.Dock="Top">
             <MenuItem Header="文件(_F)">
-                <MenuItem Header="同步邮件(_S)" Command="{Binding SyncCommand}" InputGestureText="Ctrl+S"/>
-                <MenuItem Header="停止同步(_T)" Command="{Binding StopSyncCommand}"/>
+                <MenuItem Header="同步邮件(_S)" Command="{Binding SyncCommand}" InputGestureText="Ctrl+S">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconSync}" Fill="#2B7DE9" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="停止同步(_T)" Command="{Binding StopSyncCommand}">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconStop}" Fill="#D9534F" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
-                <MenuItem Header="清空本地数据(_C)" Command="{Binding ClearDataCommand}" InputGestureText="Ctrl+Shift+Delete"/>
+                <MenuItem Header="清空本地数据(_C)" Command="{Binding ClearDataCommand}" InputGestureText="Ctrl+Shift+Delete">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconDelete}" Fill="#D9534F" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
+                </MenuItem>
                 <Separator/>
-                <MenuItem Header="退出(_X)" Click="Exit_Click"/>
+                <MenuItem Header="退出(_X)" Click="Exit_Click">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconLogout}" Fill="#7F8C8D" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
+                </MenuItem>
             </MenuItem>
             <MenuItem Header="设置(_S)">
-                <MenuItem Header="设置…(_O)" Command="{Binding OpenSettingsCommand}" InputGestureText="Ctrl+,"/>
+                <MenuItem Header="设置…(_O)" Command="{Binding OpenSettingsCommand}" InputGestureText="Ctrl+,">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconCog}" Fill="#5B9BD5" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
+                </MenuItem>
+            </MenuItem>
+            <MenuItem Header="导航(_N)">
+                <MenuItem Header="跳转新邮件(_J)" Command="{Binding JumpToNewMailCommand}" InputGestureText="Ctrl+J">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconEmail}" Fill="#2B7DE9" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
+                </MenuItem>
+            </MenuItem>
+            <MenuItem Header="视图(_V)">
+                <MenuItem Header="展开层次(_E)">
+                    <!-- 一次性动作：点击只展开到目标层次，不做勾选、不持久化为状态；之后展开状态由用户操作决定 -->
+                    <MenuItem Header="只显示用户名称" Tag="1" Click="SetExpandDepth_Click"/>
+                    <MenuItem Header="显示到产品名称" Tag="2" Click="SetExpandDepth_Click"/>
+                    <MenuItem Header="显示到线索首邮件" Tag="3" Click="SetExpandDepth_Click"/>
+                    <MenuItem Header="显示所有邮件" Tag="4" Click="SetExpandDepth_Click"/>
+                </MenuItem>
             </MenuItem>
             <MenuItem Header="帮助(_H)">
-                <MenuItem Header="关于…(_A)" Click="About_Click"/>
+                <MenuItem Header="关于…(_A)" Click="About_Click">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconInfo}" Fill="#2B7DE9" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
+                </MenuItem>
             </MenuItem>
         </Menu>
 
@@ -254,12 +325,20 @@
                 <!-- 检索栏：按线索根邮件主题检索 -->
                 <Border DockPanel.Dock="Top" Padding="8,6" Background="#fafafa" BorderBrush="#e0e0e0" BorderThickness="0,0,1,1">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="🔍" VerticalAlignment="Center"/>
+                        <Path Data="{StaticResource IconSearch}" Fill="#757575" Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center"/>
                         <TextBox Width="190" Margin="6,0,0,0" Padding="4" VerticalAlignment="Center"
                                  Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="按线索根邮件主题检索，留空显示全部"/>
+                                 ToolTip="按工单号或邮件主题检索，留空显示全部"/>
                         <Button Content="✕" Width="24" Padding="0" Margin="4,0,0,0"
                                 VerticalAlignment="Center" ToolTip="清除检索" Click="ClearSearch_Click"/>
+                        <Button Command="{Binding JumpToNewMailCommand}" MinWidth="104" Padding="10,3"
+                                FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"
+                                ToolTip="跳到下一条新同步的邮件（Ctrl+J）">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Data="{StaticResource IconEmail}" Fill="#2B7DE9" Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center"/>
+                                <TextBlock Text=" 跳转新邮件" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
                     </StackPanel>
                 </Border>
                 <TreeView x:Name="TreeView" ItemsSource="{Binding Customers}"
@@ -280,12 +359,22 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <Button x:Name="ExpandQuoteButton" Grid.Column="0" Content="展开引用" Click="ExpandQuote_Click"
-                            MinWidth="76" Padding="10,3" FontSize="11" VerticalAlignment="Center"
-                            Visibility="Collapsed" ToolTip="展开被引用的历史邮件"/>
-                    <Button Grid.Column="2" Content="{Binding TranslateButtonText}" Command="{Binding TranslateEmailCommand}"
-                            MinWidth="76" Padding="12,3" FontSize="11" VerticalAlignment="Center"
-                            HorizontalAlignment="Right" ToolTip="交给 AI 翻译邮件正文"/>
+                    <Button x:Name="ExpandQuoteButton" Grid.Column="0" Click="ExpandQuote_Click" MinWidth="84"
+                            Padding="10,3" FontSize="11" VerticalAlignment="Center"
+                            Visibility="Collapsed" ToolTip="展开被引用的历史邮件">
+                        <StackPanel Orientation="Horizontal">
+                            <Path Data="{StaticResource IconPaperclip}" Fill="#5B9BD5" Width="14" Height="14" Stretch="Uniform" VerticalAlignment="Center"/>
+                            <TextBlock Text=" 展开引用" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
+                    <Button Grid.Column="2" Command="{Binding TranslateEmailCommand}" MinWidth="88" Padding="12,3"
+                            FontSize="11" VerticalAlignment="Center" HorizontalAlignment="Right"
+                            ToolTip="交给 AI 翻译邮件正文">
+                        <StackPanel Orientation="Horizontal">
+                            <Path Data="{StaticResource IconEarth}" Fill="#43A047" Width="14" Height="14" Stretch="Uniform" VerticalAlignment="Center"/>
+                            <TextBlock Text="{Binding TranslateButtonText}" Margin="4,0,0,0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Button>
                 </Grid>
 
                 <!-- 内容区：总结 / 标题 / 元信息 / 正文 -->
@@ -301,10 +390,13 @@
                     <Border Grid.Row="0" Background="{Binding SelectedSummaryBackground}" BorderBrush="{Binding SelectedSummaryBorder}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
                         <StackPanel>
                             <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="📋 " FontSize="14"/>
+                                <Path Data="{StaticResource IconDoc}" Fill="#009688" Width="16" Height="16" Stretch="Uniform" VerticalAlignment="Center"/>
                                 <TextBlock Text="{Binding SelectedThreadHeader}" FontSize="15" FontWeight="Bold" Foreground="#1f3a5f"/>
                             </StackPanel>
                             <TextBlock Text="{Binding SelectedThreadSummary}" TextWrapping="Wrap" Margin="2,8,0,0" Foreground="#333"/>
+                            <TextBlock Text="{Binding SelectedStatusReasonDisplay}" TextWrapping="Wrap" Margin="2,8,0,0"
+                                       Foreground="#8a5a00" FontWeight="SemiBold"
+                                       Visibility="{Binding HasStatusReason, Converter={StaticResource BoolToVis}}"/>
                         </StackPanel>
                     </Border>
 

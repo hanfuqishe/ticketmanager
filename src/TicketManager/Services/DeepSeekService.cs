@@ -53,8 +53,15 @@ public class DeepSeekService : IDisposable
         return await ChatAsync(systemPrompt, userContent.ToString(), maxTokens: 64);
     }
 
-    /// <summary>为整个工单生成状态总结。失败返回 null。</summary>
-    public async Task<(string Status, string Summary)?> SummarizeThreadAsync(TicketThread thread)
+    /// <summary>
+    /// 为整个工单生成状态总结。失败返回 null。
+    /// 可传 focusEmails（只提交这些新增邮件）与 previousSummary（上次总结）做增量更新，
+    /// 避免把同线索中未变化的其他邮件重复提交给 AI。
+    /// </summary>
+    public async Task<(string Status, string Summary)?> SummarizeThreadAsync(
+        TicketThread thread,
+        IReadOnlyList<EmailMessage>? focusEmails = null,
+        string? previousSummary = null)
     {
         if (!Configured) return null;
         const string systemPrompt =
@@ -72,8 +79,11 @@ public class DeepSeekService : IDisposable
 
         var userContent = new StringBuilder();
         userContent.AppendLine($"【工单号】{thread.TicketNumber}  产品：{thread.Product}  客户：{thread.Enterprise}");
-        userContent.AppendLine("【邮件往来】");
-        foreach (var e in thread.Emails.OrderBy(e => e.DateSent))
+        if (!string.IsNullOrEmpty(previousSummary))
+            userContent.AppendLine($"【上次总结】{previousSummary}");
+        userContent.AppendLine(focusEmails == null ? "【邮件往来】" : "【本次新增邮件】");
+        var emails = focusEmails ?? thread.Emails;
+        foreach (var e in emails.OrderBy(e => e.DateSent))
         {
             userContent.AppendLine($"---- {e.DateSent:MM-dd HH:mm} {DirectionLabel(e.FromAddress)}{e.DisplaySender} ----");
             userContent.AppendLine(Truncate(e.BodyText, _config.MaxBodyChars / 4));

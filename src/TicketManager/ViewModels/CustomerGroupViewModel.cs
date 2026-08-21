@@ -10,6 +10,6 @@ public class CustomerGroupViewModel
     public CustomerGroupViewModel(string name) => Name = name;
     public string CountText => $"{Products.Sum(p => p.Threads.Count)} 条";
 
-    /// <summary>默认展开（显示客户下的产品）。</summary>
-    public bool ExpandedByDefault => true;
+    /// <summary>默认展开（按“展开层次”设置，显示客户下的产品）。</summary>
+    public bool ExpandedByDefault { get; set; } = true;
 }

@@ -10,6 +10,9 @@ public class TicketThread
     public string Status { get; set; } = "";
     public string StatusSummary { get; set; } = "";
 
+    /// <summary>手工设置状态时填写的理由（AI 总结状态时为空串）。</summary>
+    public string StatusReason { get; set; } = "";
+
     public DateTimeOffset FirstActivity { get; set; }
     public DateTimeOffset LastActivity { get; set; }
 

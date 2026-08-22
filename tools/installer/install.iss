@@ -33,6 +33,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："; Flags: unchecked
 
+[InstallDelete]
+; 升级时先清空旧安装目录，避免 self-contained(1.0.0) 与 framework-dependent(1.0.1) 文件混合导致启动失败
+Type: filesandordirs; Name: "{app}"
+
 [Files]
 Source: "..\..\src\TicketManager\bin\Release\net8.0-windows\win-x64\publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 

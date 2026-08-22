@@ -157,16 +157,44 @@
         </Style>
 
         <HierarchicalDataTemplate DataType="{x:Type vm:CustomerGroupViewModel}" ItemsSource="{Binding Products}">
-            <StackPanel Orientation="Horizontal">
-                <Path Data="{StaticResource IconOffice}" Fill="#E67E22" Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center"/>
+            <!-- 客户行：上下留白加大行高，与邮件行形成层次 -->
+            <StackPanel Orientation="Horizontal" Margin="0,5,0,5">
+                <Path Data="{StaticResource IconOffice}" Fill="#E67E22" Width="22" Height="22" Stretch="Uniform" VerticalAlignment="Center"/>
                 <TextBlock Text="{Binding Name}" FontWeight="Bold" Margin="6,0,0,0" VerticalAlignment="Center"/>
                 <TextBlock Text="{Binding CountText}" Foreground="Gray" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
             </StackPanel>
         </HierarchicalDataTemplate>
 
         <HierarchicalDataTemplate DataType="{x:Type vm:ProductGroupViewModel}" ItemsSource="{Binding Threads}">
-            <StackPanel Orientation="Horizontal">
-                <Path Data="{StaticResource IconPackage}" Fill="#8E24AA" Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center"/>
+            <!-- 产品行：上下留白加大行高，与邮件行形成层次 -->
+            <StackPanel Orientation="Horizontal" Margin="0,5,0,5">
+                <!-- 匹配到产品 Logo 时显示图片；否则显示默认盒子图标 -->
+                <Image Source="{Binding ProductLogo}" Width="24" Height="24" Stretch="Uniform"
+                       VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality">
+                    <Image.Style>
+                        <Style TargetType="Image">
+                            <Setter Property="Visibility" Value="Visible"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding ProductLogo}" Value="{x:Null}">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Image.Style>
+                </Image>
+                <Path Data="{StaticResource IconPackage}" Fill="#8E24AA" Width="22" Height="22" Stretch="Uniform"
+                      VerticalAlignment="Center">
+                    <Path.Style>
+                        <Style TargetType="Path">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding ProductLogo}" Value="{x:Null}">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Path.Style>
+                </Path>
                 <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Margin="6,0,0,0" VerticalAlignment="Center"/>
                 <TextBlock Text="{Binding CountText}" Foreground="Gray" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
             </StackPanel>

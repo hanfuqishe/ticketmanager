@@ -1020,10 +1020,8 @@ public class MainViewModel : ViewModelBase
         int i = 0;
         if (_sortMode == TreeSortMode.Time)
         {
-            while (i < Customers.Count &&
-                   Customers[i].Products.Count > 0 &&
-                   Customers[i].Products.Max(p => p.Threads.Count > 0 ? p.Threads.Max(t => t.ThreadOwner.Thread.LastActivity) : DateTimeOffset.MinValue) > cust.Products.Max(p => p.Threads.Count > 0 ? p.Threads.Max(t => t.ThreadOwner.Thread.LastActivity) : DateTimeOffset.MinValue))
-                i++;
+            var myMax = CustomerMaxActivity(cust);
+            while (i < Customers.Count && CustomerMaxActivity(Customers[i]) > myMax) i++;
         }
         else
         {
@@ -1037,15 +1035,32 @@ public class MainViewModel : ViewModelBase
         int i = 0;
         if (_sortMode == TreeSortMode.Time)
         {
-            while (i < cust.Products.Count &&
-                   cust.Products[i].Threads.Count > 0 &&
-                   cust.Products[i].Threads.Max(t => t.ThreadOwner.Thread.LastActivity) > prod.Threads.Max(t => t.ThreadOwner.Thread.LastActivity))
-                i++;
+            var myMax = ProductMaxActivity(prod);
+            while (i < cust.Products.Count && ProductMaxActivity(cust.Products[i]) > myMax) i++;
         }
         else
         {
             while (i < cust.Products.Count && string.Compare(cust.Products[i].Name, prod.Name, StringComparison.Ordinal) < 0) i++;
         }
         cust.Products.Insert(i, prod);
+    }
+
+    /// <summary>客户组最大活动时间：无产品/无线程时返回 MinValue（避免空集合 Max 抛异常）。</summary>
+    private static DateTimeOffset CustomerMaxActivity(CustomerGroupViewModel c)
+    {
+        var max = DateTimeOffset.MinValue;
+        foreach (var p in c.Products)
+            foreach (var t in p.Threads)
+                if (t.ThreadOwner.Thread.LastActivity > max) max = t.ThreadOwner.Thread.LastActivity;
+        return max;
+    }
+
+    /// <summary>产品组最大活动时间：无线程时返回 MinValue（避免空集合 Max 抛异常）。</summary>
+    private static DateTimeOffset ProductMaxActivity(ProductGroupViewModel p)
+    {
+        var max = DateTimeOffset.MinValue;
+        foreach (var t in p.Threads)
+            if (t.ThreadOwner.Thread.LastActivity > max) max = t.ThreadOwner.Thread.LastActivity;
+        return max;
     }
 }

@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Linq;
 using TicketManager.Models;
 
 namespace TicketManager.Services;
@@ -17,7 +18,7 @@ public class DeepSeekService : IDisposable
 {
     private readonly AppConfig _config;
     private readonly HttpClient _http;
-    private readonly SemaphoreSlim _gate = new(2, 2);
+    private readonly SemaphoreSlim _gate = new(4, 4); // AI 并发上限（标题/状态/元数据分析并行用；太高易触发 DeepSeek 限流）
 
     public DeepSeekService(AppConfig config)
     {
@@ -179,6 +180,28 @@ public class DeepSeekService : IDisposable
             "保留原文的分段与换行结构，不要添加任何解释、前缀或标注。只输出译文。";
         var userContent = Truncate(text, _config.MaxBodyChars);
         return await ChatAsync(systemPrompt, userContent, maxTokens: 1024);
+    }
+
+    /// <summary>根据当前企业名（可能是简称/拼音/英文）及相关的邮箱域名，用 AI 推断可能对应的正式中文名称列表；失败返回 null。</summary>
+    public async Task<List<string>?> SuggestEnterpriseNamesAsync(string enterpriseName, IReadOnlyList<string>? relatedDomains = null)
+    {
+        if (!Configured || string.IsNullOrWhiteSpace(enterpriseName)) return null;
+        const string systemPrompt =
+            "你熟悉国内外各企业、公司的正式注册名称与常用称谓。" +
+            "用户会提供一个企业名称（可能是简称、拼音、英文名或口语叫法），并可能附带该企业相关的邮箱域名。" +
+            "请结合域名与名称，推断它最可能对应的几个正式中文名称。只输出名称，每行一个，不要编号、不要引号、不要任何解释。" +
+            "最多 5 个；如果无法确定就输出最接近的 1-2 个。";
+        var user = $"当前企业名称：{enterpriseName}";
+        if (relatedDomains is { Count: > 0 })
+            user += "\n该企业相关的邮箱域名（可辅助判断）：" + string.Join("、", relatedDomains);
+        var resp = await ChatAsync(systemPrompt, user, maxTokens: 128);
+        if (string.IsNullOrWhiteSpace(resp)) return null;
+        var list = resp.Split('\n')
+            .Select(l => l.Trim().Trim('、', '，', ',', '.', '。', ' ', '\t', '"', '“', '”', '[', ']', '1', '2', '3', '4', '5'))
+            .Where(l => l.Length > 0)
+            .Take(5)
+            .ToList();
+        return list.Count > 0 ? list : null;
     }
 
     private async Task<string?> ChatAsync(string systemPrompt, string userContent, int maxTokens)

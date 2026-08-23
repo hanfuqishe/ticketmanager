@@ -158,6 +158,16 @@ public class DatabaseService : IDisposable
             new { folder, uid }) != null;
     }
 
+    /// <summary>本地是否已有该 Zoho 线程的邮件（用于拉取前判断：已关注线索的延续/回复，即使发件人不在关注列表也应拉取）。</summary>
+    public bool EmailExistsByZohoThreadId(long threadId)
+    {
+        if (threadId <= 0) return false;
+        using var conn = Open();
+        return conn.ExecuteScalar<long?>(
+            "SELECT Id FROM Emails WHERE ZohoThreadId = @tid LIMIT 1",
+            new { tid = threadId }) != null;
+    }
+
     // ================= Emails =================
 
     /// <summary>按 MessageId（其次 Folder+Uid）去重后插入或更新，返回记录 Id。</summary>
@@ -326,6 +336,24 @@ public class DatabaseService : IDisposable
                 conn.Execute("UPDATE Emails SET Product=@product WHERE ThreadId=@tid", new { product, tid }, tx);
             if (!string.IsNullOrEmpty(enterprise))
                 conn.Execute("UPDATE Emails SET Enterprise=@enterprise WHERE ThreadId=@tid", new { enterprise, tid }, tx);
+        }
+        tx.Commit();
+    }
+
+    /// <summary>按根邮件 Id 定位线程并更新 Threads 表的产品/客户（只覆盖非空字段）。
+    /// 与 SetThreadMetaByRootEmail 配套：挪动线索时同步更新 Threads 表，免去重建整个线程表。</summary>
+    public void UpdateThreadMetaByRootEmail(long rootEmailId, string? product, string? enterprise)
+    {
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+        var tid = conn.ExecuteScalar<long>(
+            "SELECT ThreadId FROM Emails WHERE Id=@id", new { id = rootEmailId }, tx);
+        if (tid > 0)
+        {
+            if (!string.IsNullOrEmpty(product))
+                conn.Execute("UPDATE Threads SET Product=@product WHERE Id=@tid", new { product, tid }, tx);
+            if (!string.IsNullOrEmpty(enterprise))
+                conn.Execute("UPDATE Threads SET Enterprise=@enterprise WHERE Id=@tid", new { enterprise, tid }, tx);
         }
         tx.Commit();
     }
@@ -503,6 +531,16 @@ public class DatabaseService : IDisposable
     {
         using var conn = Open();
         conn.Execute("UPDATE Emails SET IsNew = 0 WHERE Id = @id", new { id });
+    }
+
+    /// <summary>按邮件 Id 列表批量清除“新同步”标记（客户/产品右键“全部已读”）。</summary>
+    public void MarkEmailsSeen(IEnumerable<long> ids)
+    {
+        var idList = ids.Distinct().ToList();
+        if (idList.Count == 0) return;
+        using var conn = Open();
+        foreach (var chunk in idList.Chunk(500))
+            conn.Execute("UPDATE Emails SET IsNew = 0 WHERE Id IN @ids AND IsNew = 1", new { ids = chunk });
     }
 
     /// <summary>把指定线索（ThreadId）内的所有新同步邮件标记为已读（“全部已读”）。</summary>

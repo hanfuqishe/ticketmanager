@@ -157,17 +157,51 @@
         </Style>
 
         <HierarchicalDataTemplate DataType="{x:Type vm:CustomerGroupViewModel}" ItemsSource="{Binding Products}">
-            <!-- 客户行：上下留白加大行高，与邮件行形成层次 -->
-            <StackPanel Orientation="Horizontal" Margin="0,5,0,5">
-                <Path Data="{StaticResource IconOffice}" Fill="#E67E22" Width="22" Height="22" Stretch="Uniform" VerticalAlignment="Center"/>
-                <TextBlock Text="{Binding Name}" FontWeight="Bold" Margin="6,0,0,0" VerticalAlignment="Center"/>
-                <TextBlock Text="{Binding CountText}" Foreground="Gray" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
-            </StackPanel>
+            <!-- 客户行：Grid 铺满整行（含右侧空白），行内任意位置右键都可弹出导出菜单 -->
+            <Grid Margin="0,5,0,5" Background="Transparent">
+                <Grid.ContextMenu>
+                    <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}" Opened="GroupContextMenu_Opened">
+                        <MenuItem Header="设置产品" Tag="{Binding}"/>
+                        <MenuItem Header="设置客户" Tag="{Binding}"/>
+                        <MenuItem Header="重命名企业…" Tag="{Binding}" Click="RenameEnterprise_Click"/>
+                        <Separator/>
+                        <MenuItem Header="全部已读" Tag="{Binding}" Click="GroupSeen_Click">
+                            <MenuItem.Icon>
+                                <Path Data="{StaticResource IconCheck}" Fill="#43A047" Width="15" Height="15" Stretch="Uniform"/>
+                            </MenuItem.Icon>
+                        </MenuItem>
+                        <Separator/>
+                        <MenuItem Header="导出本客户全部线索为 CSV" Tag="{Binding}" Click="ExportCsv_Click"/>
+                        <MenuItem Header="导出本客户全部线索为 Excel" Tag="{Binding}" Click="ExportExcel_Click"/>
+                    </ContextMenu>
+                </Grid.ContextMenu>
+                <StackPanel Orientation="Horizontal">
+                    <Path Data="{StaticResource IconOffice}" Fill="#E67E22" Width="22" Height="22" Stretch="Uniform" VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding Name}" FontWeight="Bold" Margin="6,0,0,0" VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding CountText}" Foreground="Gray" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Grid>
         </HierarchicalDataTemplate>
 
         <HierarchicalDataTemplate DataType="{x:Type vm:ProductGroupViewModel}" ItemsSource="{Binding Threads}">
-            <!-- 产品行：上下留白加大行高，与邮件行形成层次 -->
-            <StackPanel Orientation="Horizontal" Margin="0,5,0,5">
+            <!-- 产品行：Grid 铺满整行（含右侧空白），行内任意位置右键都可弹出导出菜单 -->
+            <Grid Margin="0,5,0,5" Background="Transparent">
+                <Grid.ContextMenu>
+                    <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}" Opened="GroupContextMenu_Opened">
+                        <MenuItem Header="设置产品" Tag="{Binding}"/>
+                        <MenuItem Header="设置客户" Tag="{Binding}"/>
+                        <Separator/>
+                        <MenuItem Header="全部已读" Tag="{Binding}" Click="GroupSeen_Click">
+                            <MenuItem.Icon>
+                                <Path Data="{StaticResource IconCheck}" Fill="#43A047" Width="15" Height="15" Stretch="Uniform"/>
+                            </MenuItem.Icon>
+                        </MenuItem>
+                        <Separator/>
+                        <MenuItem Header="导出本产品全部线索为 CSV" Tag="{Binding}" Click="ExportCsv_Click"/>
+                        <MenuItem Header="导出本产品全部线索为 Excel" Tag="{Binding}" Click="ExportExcel_Click"/>
+                    </ContextMenu>
+                </Grid.ContextMenu>
+                <StackPanel Orientation="Horizontal">
                 <!-- 匹配到产品 Logo 时显示图片；否则显示默认盒子图标 -->
                 <Image Source="{Binding ProductLogo}" Width="24" Height="24" Stretch="Uniform"
                        VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality">
@@ -197,7 +231,8 @@
                 </Path>
                 <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Margin="6,0,0,0" VerticalAlignment="Center"/>
                 <TextBlock Text="{Binding CountText}" Foreground="Gray" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"/>
-            </StackPanel>
+                </StackPanel>
+            </Grid>
         </HierarchicalDataTemplate>
 
         <HierarchicalDataTemplate DataType="{x:Type vm:EmailNodeViewModel}" ItemsSource="{Binding Children}">
@@ -285,6 +320,19 @@
                     </MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
+                <MenuItem Header="导出线索(_E)">
+                    <MenuItem x:Name="ExportCsvMenuItem" Header="导出全部线索为 CSV" Click="ExportAllCsv_Click">
+                        <MenuItem.Icon>
+                            <Path Data="{StaticResource IconDoc}" Fill="#009688" Width="15" Height="15" Stretch="Uniform"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                    <MenuItem x:Name="ExportExcelMenuItem" Header="导出全部线索为 Excel" Click="ExportAllExcel_Click">
+                        <MenuItem.Icon>
+                            <Path Data="{StaticResource IconDoc}" Fill="#1E88E5" Width="15" Height="15" Stretch="Uniform"/>
+                        </MenuItem.Icon>
+                    </MenuItem>
+                </MenuItem>
+                <Separator/>
                 <MenuItem Header="退出(_X)" Click="Exit_Click">
                     <MenuItem.Icon>
                         <Path Data="{StaticResource IconLogout}" Fill="#7F8C8D" Width="15" Height="15" Stretch="Uniform"/>
@@ -306,13 +354,17 @@
                 </MenuItem>
             </MenuItem>
             <MenuItem Header="视图(_V)">
-                <MenuItem Header="展开层次(_E)">
-                    <!-- 一次性动作：点击只展开到目标层次，不做勾选、不持久化为状态；之后展开状态由用户操作决定 -->
-                    <MenuItem Header="只显示用户名称" Tag="1" Click="SetExpandDepth_Click"/>
-                    <MenuItem Header="显示到产品名称" Tag="2" Click="SetExpandDepth_Click"/>
-                    <MenuItem Header="显示到线索首邮件" Tag="3" Click="SetExpandDepth_Click"/>
-                    <MenuItem Header="显示所有邮件" Tag="4" Click="SetExpandDepth_Click"/>
+                <MenuItem Header="智能整理（折叠已结束、展开进行中）" Click="SmartCollapse_Click">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconCheck}" Fill="#43A047" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
                 </MenuItem>
+                <Separator/>
+                <!-- 一次性动作：点击只展开到目标层次，不做勾选、不持久化为状态；之后展开状态由用户操作决定 -->
+                <MenuItem Header="只显示用户名称" Tag="1" Click="SetExpandDepth_Click"/>
+                <MenuItem Header="显示到产品名称" Tag="2" Click="SetExpandDepth_Click"/>
+                <MenuItem Header="显示到线索首邮件" Tag="3" Click="SetExpandDepth_Click"/>
+                <MenuItem Header="显示所有邮件" Tag="4" Click="SetExpandDepth_Click"/>
             </MenuItem>
             <MenuItem Header="帮助(_H)">
                 <MenuItem Header="关于…(_A)" Click="About_Click">

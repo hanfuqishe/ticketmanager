@@ -1,5 +1,7 @@
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
@@ -7,6 +9,9 @@ using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using ClosedXML.Excel;
+using Microsoft.Win32;
+using TicketManager.Models;
 using TicketManager.ViewModels;
 
 namespace TicketManager;
@@ -186,6 +191,15 @@ public partial class MainWindow : Window
 
     private void TreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
+        // 记录当前选中的范围（客户/产品），主菜单“导出”据此动态决定导出范围并更新菜单文本
+        _exportScopeTag = e.NewValue switch
+        {
+            CustomerGroupViewModel cg => cg,
+            ProductGroupViewModel pg => pg,
+            _ => null
+        };
+        UpdateExportMenuText();
+
         // 原有跳转：点击线索/邮件 → 右侧详情
         switch (e.NewValue)
         {
@@ -353,15 +367,20 @@ public partial class MainWindow : Window
             MetaLog($"开始: targets=[{string.Join(",", targets)}] name={name} isProduct={isProduct} rootEmailIds=[{string.Join(",", rootEmailIds)}]");
             var product = isProduct ? name : "";
             var enterprise = isProduct ? "" : name;
-            // 数据写入 + 线程重建（耗时）放到后台线程，避免阻塞 UI 导致刷新时空白/卡顿；
-            // 用根邮件 Id 定位（稳定），避免界面 ThreadId 过期导致更新 0 行
-            await Task.Run(() => _vm.SetMetaForThreads(rootEmailIds, product, enterprise));
-            // 回到 UI 线程重建显示
-            ReloadPreservingExpansion();
-            _vm.ReselectByRootEmailIds(rootEmailIds); // 重建后按根邮件重新高亮选中
-            MetaLog($"Reload后 目标分组=" + (rootEmailIds.Count > 0 ? FindGroupOfRoot(rootEmailIds[0]) : "无"));
-            // 尽力滚动选中目标线索（多轮容器就绪等待）；失败不影响可见性（分组已默认展开）
-            if (rootEmailIds.Count > 0) SelectRootEmailById(rootEmailIds[0]);
+            // 后台：更新数据库（Emails + Threads 表，只动目标线程，不重建整个线程表）
+            await Task.Run(() =>
+            {
+                foreach (var id in rootEmailIds)
+                    App.Workflow.SetThreadMetaByRootEmail(id, product, enterprise);
+            });
+            // UI 线程：在现有树中增量移动线索节点，不重建整棵树（避免窗口跳转/闪烁），并保持选中
+            _vm.MoveThreadsToGroups(rootEmailIds, product, enterprise);
+            // 若被移动的线索就是“当前选中”线索：保持选中不变，并把 TreeView 高亮拉回、滚动到它的新显示位置
+            // （从旧分组 Remove 时 TreeView 会自动把选中跳到下一个节点，需要重新定位选中）
+            var curRootId = _vm.SelectedThread?.Children.FirstOrDefault(c => c.IsRoot)?.Email.Id ?? 0;
+            if (curRootId > 0 && rootEmailIds.Contains(curRootId) && _vm.SelectedEmail is { } sel)
+                SelectAndScrollToEmail(sel);
+            MetaLog($"移动后 目标分组=" + (rootEmailIds.Count > 0 ? FindGroupOfRoot(rootEmailIds[0]) : "无"));
             _vm.StatusText = $"已为 {targets.Count} 条线索设置 {(isProduct ? "产品：" + name : "客户：" + name)}";
         }
         catch (Exception ex)
@@ -431,6 +450,312 @@ public partial class MainWindow : Window
         };
         if (win.ShowDialog() == true)
             _vm.SetThreadStatusByRootEmail(ev.Email.Id, status, win.Reason);
+    }
+
+    /// <summary>导出右键范围（客户/产品）内的所有线索为 CSV：工单号/名称/客户/产品/开始时间/最后更新/AI状态/AI详情。</summary>
+    private void ExportCsv_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem mi) return;
+        var threads = CollectScopeThreads(mi.Tag, out var scopeName);
+        if (threads == null) return;
+        ExportCsvCore(threads, scopeName);
+    }
+
+    /// <summary>主菜单：按当前选中范围（客户/产品）导出线索为 CSV，无选中则全部。</summary>
+    private void ExportAllCsv_Click(object sender, RoutedEventArgs e)
+        => ExportCsvCore(ResolveExportScope(out var scopeName), scopeName);
+
+    /// <summary>CSV 导出主体：对话框 + 写文件 + 完成提示。</summary>
+    private void ExportCsvCore(List<TicketThread> threads, string scopeName)
+    {
+        if (threads.Count == 0)
+        {
+            MessageBox.Show(this, "该范围内没有线索可导出。", "导出 CSV", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dlg = new SaveFileDialog
+        {
+            Title = "导出线索为 CSV",
+            Filter = "CSV 文件 (*.csv)|*.csv",
+            FileName = $"线索导出_{SanitizeFileName(scopeName)}_{DateTime.Now:yyyyMMdd_HHmmss}.csv"
+        };
+        if (dlg.ShowDialog(this) != true) return;
+
+        try
+        {
+            using (var sw = new StreamWriter(dlg.FileName, false, new UTF8Encoding(true)))
+            {
+                sw.WriteLine("工单号,线索名称,客户,产品,开始时间,最后更新时间,AI状态,AI详情");
+                foreach (var t in threads)
+                {
+                    var row = new[]
+                    {
+                        t.TicketNumber, RootSubject(t), t.Enterprise,
+                        string.IsNullOrWhiteSpace(t.Product) ? "未分类产品" : t.Product,
+                        t.FirstActivity.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss"),
+                        t.LastActivity.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss"),
+                        t.Status, t.StatusSummary
+                    };
+                    sw.WriteLine(string.Join(",", row.Select(CsvEscape)));
+                }
+            }
+            // 文件流已释放（using 块结束）再弹窗，避免 Excel 打开时提示“文件被锁定”
+            ShowExportComplete(dlg.FileName, threads.Count);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"导出失败：{ex.Message}", "导出 CSV", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>收集右键范围（客户/产品）内的所有线索；scopeName 为文件名范围名（产品时含上级企业名）。</summary>
+    private List<TicketThread>? CollectScopeThreads(object? tag, out string scopeName)
+    {
+        scopeName = "";
+        var threads = new List<TicketThread>();
+        switch (tag)
+        {
+            case CustomerGroupViewModel cust:
+                scopeName = cust.Name;
+                foreach (var p in cust.Products)
+                    foreach (var root in p.Threads)
+                        threads.Add(root.ThreadOwner.Thread);
+                break;
+            case ProductGroupViewModel prod:
+                scopeName = prod.Name;
+                foreach (var root in prod.Threads)
+                    threads.Add(root.ThreadOwner.Thread);
+                // 产品名前面带上所属上级企业名，便于区分不同企业下的同名产品
+                foreach (var cust in _vm.Customers)
+                    if (cust.Products.Contains(prod))
+                    {
+                        scopeName = $"{cust.Name}_{prod.Name}";
+                        break;
+                    }
+                break;
+            default:
+                return null;
+        }
+        return threads.Distinct().OrderByDescending(t => t.LastActivity).ToList();
+    }
+
+    /// <summary>收集当前树中全部线索（主菜单“导出全部”用）。</summary>
+    private List<TicketThread> CollectAllThreads(out string scopeName)
+    {
+        scopeName = "全部";
+        var threads = new List<TicketThread>();
+        foreach (var cust in _vm.Customers)
+            foreach (var p in cust.Products)
+                foreach (var root in p.Threads)
+                    threads.Add(root.ThreadOwner.Thread);
+        return threads.Distinct().OrderByDescending(t => t.LastActivity).ToList();
+    }
+
+    /// <summary>当前选中的客户/产品节点（主菜单导出范围用）；选中其他节点则为 null（导出全部）。</summary>
+    private object? _exportScopeTag;
+
+    /// <summary>主菜单导出范围：当前选中客户/产品 → 该范围；否则全部线索。</summary>
+    private List<TicketThread> ResolveExportScope(out string scopeName)
+    {
+        if (_exportScopeTag is CustomerGroupViewModel or ProductGroupViewModel)
+            return CollectScopeThreads(_exportScopeTag, out scopeName)!;
+        return CollectAllThreads(out scopeName);
+    }
+
+    /// <summary>主菜单“导出”菜单项文本随当前选中范围动态更新。</summary>
+    private void UpdateExportMenuText()
+    {
+        var (csv, xlsx) = _exportScopeTag switch
+        {
+            CustomerGroupViewModel cg => ($"导出该企业（{cg.Name}）的线索为 CSV", $"导出该企业（{cg.Name}）的线索为 Excel"),
+            ProductGroupViewModel pg => ($"导出该产品（{pg.Name}）的线索为 CSV", $"导出该产品（{pg.Name}）的线索为 Excel"),
+            _ => ("导出全部线索为 CSV", "导出全部线索为 Excel")
+        };
+        ExportCsvMenuItem.Header = csv;
+        ExportExcelMenuItem.Header = xlsx;
+    }
+
+    /// <summary>导出右键范围（客户/产品）内的所有线索为 Excel，按状态给整行着色。</summary>
+    private void ExportExcel_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem mi) return;
+        var threads = CollectScopeThreads(mi.Tag, out var scopeName);
+        if (threads == null) return;
+        ExportExcelCore(threads, scopeName);
+    }
+
+    /// <summary>主菜单：按当前选中范围（客户/产品）导出线索为 Excel，无选中则全部。</summary>
+    private void ExportAllExcel_Click(object sender, RoutedEventArgs e)
+        => ExportExcelCore(ResolveExportScope(out var scopeName), scopeName);
+
+    /// <summary>Excel 导出主体：对话框 + 写 xlsx（按状态整行着色）+ 完成提示。</summary>
+    private void ExportExcelCore(List<TicketThread> threads, string scopeName)
+    {
+        if (threads.Count == 0)
+        {
+            MessageBox.Show(this, "该范围内没有线索可导出。", "导出 Excel", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dlg = new SaveFileDialog
+        {
+            Title = "导出线索为 Excel",
+            Filter = "Excel 文件 (*.xlsx)|*.xlsx",
+            FileName = $"线索导出_{SanitizeFileName(scopeName)}_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx"
+        };
+        if (dlg.ShowDialog(this) != true) return;
+
+        try
+        {
+            using var wb = new XLWorkbook();
+            var ws = wb.Worksheets.Add("线索");
+            string[] headers = { "工单号", "线索名称", "客户", "产品", "开始时间", "最后更新时间", "AI状态", "AI详情" };
+            for (int c = 0; c < headers.Length; c++)
+                ws.Cell(1, c + 1).Value = headers[c];
+            var headerRange = ws.Range(1, 1, 1, headers.Length);
+            headerRange.Style.Font.Bold = true;
+            headerRange.Style.Font.FontColor = XLColor.White;
+            headerRange.Style.Fill.BackgroundColor = XLColor.FromHtml("#1F3A5F");
+            headerRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+
+            int r = 2;
+            foreach (var t in threads)
+            {
+                var values = new[]
+                {
+                    t.TicketNumber, RootSubject(t), t.Enterprise,
+                    string.IsNullOrWhiteSpace(t.Product) ? "未分类产品" : t.Product,
+                    t.FirstActivity.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss"),
+                    t.LastActivity.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss"),
+                    t.Status, t.StatusSummary
+                };
+                for (int c = 0; c < values.Length; c++)
+                    ws.Cell(r, c + 1).Value = values[c];
+                var fill = StatusFillColor(t.Status);
+                if (fill != null)
+                    ws.Range(r, 1, r, headers.Length).Style.Fill.BackgroundColor = XLColor.FromHtml(fill);
+                r++;
+            }
+            ws.Columns().AdjustToContents();
+            ws.Range(1, 1, r - 1, headers.Length).SetAutoFilter(); // 表头自动筛选
+            wb.SaveAs(dlg.FileName);
+            ShowExportComplete(dlg.FileName, threads.Count);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"导出失败：{ex.Message}", "导出 Excel", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>状态 → Excel 行底色（与界面 AI 总结淡色一致）；未知状态不着色。</summary>
+    private static string? StatusFillColor(string status) => status switch
+    {
+        "已解决" => "#E8F5E9",
+        "等待客户回复" => "#FFEBEE",
+        "等待客服回复" => "#FFF3E0",
+        "等待研发回复" => "#E3F2FD",
+        "纳入开发计划" => "#F3E5F5",
+        "合并或拆分为其他工单" => "#F0FDFA",
+        "处理中" => "#ECEFF1",
+        "需升级" => "#FFEBEE",
+        "新建" => "#F5F5F5",
+        _ => null
+    };
+
+    /// <summary>导出成功提示框：显示导出条数与路径，可点击“打开文件”直接打开 CSV。</summary>
+    private void ShowExportComplete(string file, int count)
+    {
+        var win = new Window
+        {
+            Title = "导出完成",
+            Width = 460,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this,
+            ResizeMode = ResizeMode.NoResize,
+            FontFamily = new FontFamily("Microsoft YaHei UI"),
+            FontSize = 13,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(20),
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = $"已导出 {count} 条线索到：\n{file}",
+                        TextWrapping = TextWrapping.Wrap,
+                        Margin = new Thickness(0, 0, 0, 18)
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Orientation.Horizontal,
+                        HorizontalAlignment = HorizontalAlignment.Right,
+                        Children =
+                        {
+                            new Button
+                            {
+                                Content = "打开文件", Width = 90, Padding = new Thickness(6, 3, 6, 3),
+                                IsDefault = true, Margin = new Thickness(0, 0, 10, 0)
+                            },
+                            new Button { Content = "关闭", Width = 80, Padding = new Thickness(6, 3, 6, 3), IsCancel = true }
+                        }
+                    }
+                }
+            }
+        };
+        // 给按钮挂事件
+        if (win.Content is StackPanel panel &&
+            panel.Children[1] is StackPanel buttons)
+        {
+            if (buttons.Children[0] is Button openBtn)
+                openBtn.Click += (_, _) => OpenExportedFile(file);
+            if (buttons.Children[1] is Button closeBtn)
+                closeBtn.Click += (_, _) => win.Close();
+        }
+        win.ShowDialog();
+    }
+
+    /// <summary>用系统默认程序打开导出的文件。</summary>
+    private static void OpenExportedFile(string path)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true };
+            System.Diagnostics.Process.Start(psi);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"无法打开文件：{ex.Message}", "打开文件", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>线索名称 = 界面节点显示的标题（与 EmailNodeViewModel.Title 一致）：AI 翻译优先，否则剥离标签后的纯主题。</summary>
+    private static string RootSubject(TicketThread t)
+    {
+        var root = t.DisplayRoots.Count > 0 && t.DisplayRoots[0].Email is { } e
+            ? e
+            : t.Emails.OrderBy(x => x.DateSent).FirstOrDefault();
+        if (root == null) return "";
+        if (!string.IsNullOrWhiteSpace(root.AiTitle)) return root.AiTitle;
+        var parsed = TicketManager.Services.SubjectParser.Parse(root.Subject);
+        return parsed != null && !string.IsNullOrWhiteSpace(parsed.Fault)
+            ? parsed.Fault
+            : root.Subject.Trim();
+    }
+
+    /// <summary>CSV 转义：含逗号/引号/换行时用双引号包裹，内部引号翻倍。</summary>
+    private static string CsvEscape(string s)
+    {
+        if (s.IndexOfAny(new[] { ',', '"', '\r', '\n' }) < 0) return s;
+        return "\"" + s.Replace("\"", "\"\"") + "\"";
+    }
+
+    private static string SanitizeFileName(string s)
+    {
+        foreach (var c in Path.GetInvalidFileNameChars())
+            s = s.Replace(c, '_');
+        return string.IsNullOrWhiteSpace(s) ? "全部" : s;
     }
 
     private int _newMailIndex = -1;
@@ -551,12 +876,38 @@ public partial class MainWindow : Window
             {
                 if (tvi.Parent is TreeViewItem ptvi) ptvi.IsExpanded = true;
                 tvi.IsSelected = true;
-                tvi.BringIntoView();
+                // 仅当目标不在可视区域内才滚动：已可见的节点保持原位，避免重建后抖动/位置变化
+                ScrollIntoViewIfNeeded(tvi);
                 return true;
             }
             if (SelectAndScroll(tvi, target)) return true;
         }
         return false;
+    }
+
+    /// <summary>仅当目标 TreeViewItem 不在 TreeView 可视区域内时才 BringIntoView（保持已可见节点的显示位置）。</summary>
+    private static void ScrollIntoViewIfNeeded(TreeViewItem tvi)
+    {
+        var sv = FindTreeScrollViewer(tvi);
+        if (sv == null) { tvi.BringIntoView(); return; }
+        try
+        {
+            tvi.UpdateLayout();
+            var p = tvi.TransformToAncestor(sv).Transform(new Point(0, 0));
+            double top = p.Y;
+            double bottom = top + tvi.ActualHeight;
+            if (top >= 0 && bottom <= sv.ViewportHeight) return; // 已完整可见 → 不滚动
+        }
+        catch { /* 布局未就绪，按需滚动兜底 */ }
+        tvi.BringIntoView();
+    }
+
+    /// <summary>从节点向上查找最近的 ScrollViewer（TreeView 内部的滚动容器）。</summary>
+    private static ScrollViewer? FindTreeScrollViewer(DependencyObject d)
+    {
+        while (d != null && d is not ScrollViewer)
+            d = VisualTreeHelper.GetParent(d);
+        return d as ScrollViewer;
     }
 
 
@@ -568,6 +919,223 @@ public partial class MainWindow : Window
     }
 
     /// <summary>右键“全部已读”：把该线索内所有新同步邮件标记为已读。</summary>
+    /// <summary>视图菜单“智能整理”：已结束的线索/产品/企业收起，进行中的（需关注的）展开。</summary>
+    private void SmartCollapse_Click(object sender, RoutedEventArgs e)
+    {
+        Mouse.OverrideCursor = Cursors.Wait; // 智能整理/展开较耗时，先显示忙碌光标
+        try
+        {
+            void Walk(ItemsControl parent)
+            {
+                foreach (var item in parent.Items)
+                {
+                    if (parent.ItemContainerGenerator.ContainerFromItem(item) is not TreeViewItem tvi) continue;
+                    bool? expand = item switch
+                    {
+                        CustomerGroupViewModel c => !IsCustomerAllClosed(c),   // 有进行中 → 展开；全部结束 → 收起
+                        ProductGroupViewModel p => !IsProductAllClosed(p),
+                        // 线索：仅“未结束 且 有新邮件”才展开；无新邮件的进行中线索也保持折叠
+                        EmailNodeViewModel ev when ev.IsRoot => !MainViewModel.IsThreadClosed(ev.ThreadOwner.Thread) && ev.ThreadOwner.HasNewMail,
+                        _ => null
+                    };
+                    if (expand.HasValue) tvi.IsExpanded = expand.Value;
+                    Walk(tvi);
+                }
+            }
+            Walk(TreeView);
+            _vm.StatusText = "已智能整理：结束的收起、进行中的展开";
+            // 等布局/渲染完成后再恢复光标（展开大量节点时渲染较耗时）
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+            {
+                TreeView.UpdateLayout();
+                Mouse.OverrideCursor = null;
+            }));
+        }
+        catch
+        {
+            Mouse.OverrideCursor = null;
+        }
+    }
+
+    /// <summary>产品下所有线索都已结束。</summary>
+    private static bool IsProductAllClosed(ProductGroupViewModel p)
+        => p.Threads.Count > 0 && p.Threads.All(r => MainViewModel.IsThreadClosed(r.ThreadOwner.Thread));
+
+    /// <summary>企业下所有产品都已结束。</summary>
+    private static bool IsCustomerAllClosed(CustomerGroupViewModel c)
+        => c.Products.Count > 0 && c.Products.All(IsProductAllClosed);
+
+    /// <summary>企业行右键“重命名企业”：先让 AI 推断正式名称候选供选择，再把该企业下所有线索的企业名称改为新名称（产品不变）。</summary>
+    private async void RenameEnterprise_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem mi || mi.Tag is not CustomerGroupViewModel cust) return;
+        var roots = cust.Products.SelectMany(p => p.Threads).ToList();
+        if (roots.Count == 0) return;
+        var rootEmailIds = roots.Select(r => r.Email.Id).ToList();
+
+        // 用 AI 查询该企业可能对应的正式名称候选（连同相关域名一并提供，失败则无候选，仍可手动输入）
+        var suggestions = new List<string>();
+        Mouse.OverrideCursor = Cursors.Wait;
+        try
+        {
+            _vm.StatusText = "正在查询企业正式名称候选…";
+            await Task.Yield();
+            var relatedDomains = CollectDomainsForEnterprise(cust);
+            using var ai = new TicketManager.Services.DeepSeekService(App.Workflow.Config);
+            var list = await ai.SuggestEnterpriseNamesAsync(cust.Name, relatedDomains);
+            if (list != null) suggestions = list;
+        }
+        catch { /* AI 失败则无候选 */ }
+        finally { Mouse.OverrideCursor = null; }
+
+        var box = new TextBox { Text = cust.Name, Margin = new Thickness(0, 8, 0, 0), Padding = new Thickness(4) };
+        var listBox = new ListBox
+        {
+            Margin = new Thickness(0, 6, 0, 0),
+            MaxHeight = 150,
+            ItemsSource = suggestions,
+            Visibility = suggestions.Count > 0 ? Visibility.Visible : Visibility.Collapsed
+        };
+        listBox.SelectionChanged += (_, _) => { if (listBox.SelectedItem is string s) box.Text = s; };
+        var okBtn = new Button { Content = "确定", Width = 80, Padding = new Thickness(6, 3, 6, 3), IsDefault = true };
+        var cancelBtn = new Button { Content = "取消", Width = 80, Padding = new Thickness(6, 3, 6, 3), IsCancel = true, Margin = new Thickness(10, 0, 0, 0) };
+        var win = new Window
+        {
+            Title = "重命名企业",
+            Width = 400,
+            SizeToContent = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this,
+            ResizeMode = ResizeMode.NoResize,
+            FontFamily = new FontFamily("Microsoft YaHei UI"),
+            FontSize = 13,
+            Content = new StackPanel
+            {
+                Margin = new Thickness(20),
+                Children =
+                {
+                    new TextBlock { Text = $"将把企业名称「{cust.Name}」改为：", TextWrapping = TextWrapping.Wrap },
+                    new TextBlock
+                    {
+                        Text = "AI 建议的正式名称（点选自动填入）：",
+                        Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#2B7DE9")),
+                        Margin = new Thickness(0, 12, 0, 0),
+                        Visibility = suggestions.Count > 0 ? Visibility.Visible : Visibility.Collapsed
+                    },
+                    listBox,
+                    box,
+                    new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 18, 0, 0), Children = { okBtn, cancelBtn } }
+                }
+            }
+        };
+        okBtn.Click += (_, _) => win.DialogResult = true;
+        cancelBtn.Click += (_, _) => win.DialogResult = false;
+        if (win.ShowDialog() != true) return;
+        var newName = box.Text.Trim();
+        if (string.IsNullOrWhiteSpace(newName) || string.Equals(newName, cust.Name, StringComparison.Ordinal)) return;
+
+        Mouse.OverrideCursor = Cursors.Wait;
+        try
+        {
+            await Task.Yield();
+            // product 传空串 → 只更新企业，不改产品
+            await Task.Run(() => _vm.SetMetaForThreads(rootEmailIds, "", newName));
+            ReloadPreservingExpansion();
+            _vm.StatusText = $"已把企业「{cust.Name}」更名为「{newName}」（{roots.Count} 条线索）";
+        }
+        catch (Exception ex)
+        {
+            _vm.StatusText = "更名失败：" + ex.Message;
+        }
+        finally
+        {
+            Mouse.OverrideCursor = null;
+        }
+    }
+
+    /// <summary>收集某企业相关的邮箱域名：域名→企业映射表反查 + 该企业下所有线索邮件参与者的域名（去重）。</summary>
+    private static List<string> CollectDomainsForEnterprise(CustomerGroupViewModel cust)
+    {
+        var domains = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // 1) 域名→企业 映射表反查（该企业对应的域名）
+        foreach (var kv in App.Workflow.Config.DomainEnterpriseMappings)
+            if (string.Equals(kv.Value, cust.Name, StringComparison.OrdinalIgnoreCase))
+                domains.Add(kv.Key);
+        // 2) 该企业下所有线索邮件的参与者域名
+        foreach (var p in cust.Products)
+            foreach (var root in p.Threads)
+                foreach (var email in root.ThreadOwner.Thread.Emails)
+                {
+                    AddAddressDomains(domains, email.FromAddress);
+                    AddAddressDomains(domains, email.ToAddresses);
+                    AddAddressDomains(domains, email.CcAddresses);
+                }
+        return domains.OrderBy(x => x).Take(20).ToList();
+    }
+
+    /// <summary>把地址串（分号/逗号分隔）中的邮箱域名加入集合。</summary>
+    private static void AddAddressDomains(HashSet<string> set, string addresses)
+    {
+        if (string.IsNullOrWhiteSpace(addresses)) return;
+        foreach (var addr in addresses.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var at = addr.IndexOf('@');
+            if (at >= 0 && at < addr.Length - 1)
+            {
+                var d = addr[(at + 1)..].Trim().ToLowerInvariant();
+                if (d.Length > 0) set.Add(d);
+            }
+        }
+    }
+
+    /// <summary>客户/产品右键菜单打开时：填充“设置产品/设置客户”子菜单，统一应用到该范围内所有线索。</summary>
+    private void GroupContextMenu_Opened(object sender, RoutedEventArgs e)
+    {
+        if (sender is not ContextMenu menu) return;
+        var roots = new List<EmailNodeViewModel>();
+        switch (menu.DataContext)
+        {
+            case CustomerGroupViewModel cust:
+                foreach (var p in cust.Products)
+                    foreach (var root in p.Threads) roots.Add(root);
+                break;
+            case ProductGroupViewModel prod:
+                foreach (var root in prod.Threads) roots.Add(root);
+                break;
+            default:
+                return;
+        }
+        if (roots.Count == 0) return;
+        var targets = roots.Select(r => r.Email.ThreadId).ToList();
+        var ev = roots[0]; // 用首个线索作为“当前值”参考（勾选显示）
+        var setProduct = FindMenuItem(menu, "设置产品");
+        var setEnterprise = FindMenuItem(menu, "设置客户");
+        if (setProduct != null) PopulateMetaMenu(setProduct, targets, ev, isProduct: true);
+        if (setEnterprise != null) PopulateMetaMenu(setEnterprise, targets, ev, isProduct: false);
+    }
+
+    /// <summary>客户/产品右键“全部已读”：把该范围内所有线索的所有邮件标记为已读。</summary>
+    private void GroupSeen_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem mi) return;
+        var roots = new List<EmailNodeViewModel>();
+        switch (mi.Tag)
+        {
+            case CustomerGroupViewModel cust:
+                foreach (var p in cust.Products)
+                    foreach (var root in p.Threads) roots.Add(root);
+                break;
+            case ProductGroupViewModel prod:
+                foreach (var root in prod.Threads) roots.Add(root);
+                break;
+            default:
+                return;
+        }
+        if (roots.Count == 0) return;
+        _vm.MarkGroupSeen(roots);
+        _vm.StatusText = "已将该范围内的所有线索标记为已读";
+    }
+
     private void MarkThreadSeen_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not MenuItem mi || mi.Tag is not EmailNodeViewModel ev) return;
@@ -588,19 +1156,52 @@ public partial class MainWindow : Window
         MessageBox.Show(this,
             "工单邮件管理器\n\n" +
             $"版本 {ver}（构建 {build}）\n\n" +
-            "从 IMAP 邮箱同步工单邮件，自动解析主题、按工单归组线程，" +
-            "并用 AI 提炼标题、总结工单状态，按 客户/产品 组织展示。\n\n" +
-            $"数据库：{_vm.DbPath}",
+            "通过 Zoho Mail REST API 同步工单邮件，自动解析主题、按工单归组线程，" +
+            "并用 AI 提炼标题、总结工单状态，按 客户/产品 组织展示。",
             "关于", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
-    /// <summary>重建树时保留各节点的展开/折叠状态，避免设置后全部收起。</summary>
+    /// <summary>重建树时保留各节点的展开/折叠状态、滚动位置，保持“当前选中”线索选中且显示位置不变。</summary>
     private void ReloadPreservingExpansion()
     {
         var expanded = new HashSet<string>();
         CaptureExpanded(TreeView, "", expanded);
+        // 记录当前滚动位置：重建后恢复，保持原可视区域（不滚动到选中，避免窗口抖动/位置跳变）
+        double prevOffset = -1;
+        if (FindScrollViewer(TreeView) is { } sv) prevOffset = sv.VerticalOffset;
         _vm.Reload();
-        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => RestoreExpanded(TreeView, "", expanded)));
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+        {
+            RestoreExpanded(TreeView, "", expanded);
+            // 展开状态恢复后，多轮把滚动位置恢复到原位，让当前窗口显示内容（含选中线索）保持不变
+            RestoreScrollOffset(prevOffset);
+        }));
+    }
+
+    /// <summary>在布局稳定后把 TreeView 滚动位置恢复到指定偏移（容器延迟生成，需多轮重试直到生效）。</summary>
+    private void RestoreScrollOffset(double offset, int attempts = 8)
+    {
+        if (offset < 0 || attempts <= 0) return;
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            if (FindScrollViewer(TreeView) is { } sv)
+            {
+                sv.ScrollToVerticalOffset(offset);
+                // 目标偏移尚未生效（容器/布局未就绪），继续重试
+                if (Math.Abs(sv.VerticalOffset - offset) > 0.5)
+                    RestoreScrollOffset(offset, attempts - 1);
+            }
+        }));
+    }
+
+    /// <summary>向下查找第一个 ScrollViewer（TreeView 的滚动容器）。</summary>
+    private static ScrollViewer? FindScrollViewer(DependencyObject root)
+    {
+        if (root is ScrollViewer sv) return sv;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            if (FindScrollViewer(VisualTreeHelper.GetChild(root, i)) is { } found)
+                return found;
+        return null;
     }
 
     private static string KeyOf(object item) => item switch

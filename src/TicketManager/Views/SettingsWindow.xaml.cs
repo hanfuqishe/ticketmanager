@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Navigation;
 using TicketManager.Models;
 using TicketManager.Services;
@@ -10,6 +11,9 @@ public partial class SettingsWindow : Window
 {
     private readonly SettingsViewModel _vm;
 
+    /// <summary>设置窗口当前是否处于打开状态（避免配置检查在设置窗口弹出期间重复提示）。</summary>
+    public static bool IsOpen { get; private set; }
+
     public SettingsWindow(WorkflowService workflow)
     {
         InitializeComponent();
@@ -19,6 +23,31 @@ public partial class SettingsWindow : Window
         ZohoClientIdBox.Password = _vm.Config.ZohoClientId;
         ZohoClientSecretBox.Password = _vm.Config.ZohoClientSecret;
         ZohoRefreshTokenBox.Password = _vm.Config.ZohoRefreshToken;
+        ReorderTabs(); // 把最常配置的 Zoho REST / DeepSeek 置顶，方便优先完成关键配置
+        IsOpen = true;
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        IsOpen = false;
+        base.OnClosed(e);
+    }
+
+    /// <summary>把「Zoho REST API」与「DeepSeek AI」两个设置页移到最前。</summary>
+    private void ReorderTabs()
+    {
+        var zoho = FindTab("Zoho REST API");
+        var deepseek = FindTab("DeepSeek AI");
+        if (zoho != null) { MainTab.Items.Remove(zoho); MainTab.Items.Insert(0, zoho); }
+        if (deepseek != null) { MainTab.Items.Remove(deepseek); MainTab.Items.Insert(1, deepseek); }
+    }
+
+    private TabItem? FindTab(string header)
+    {
+        foreach (var item in MainTab.Items)
+            if (item is TabItem t && string.Equals((string)t.Header, header, StringComparison.Ordinal))
+                return t;
+        return null;
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)

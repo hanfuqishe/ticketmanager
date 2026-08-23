@@ -244,38 +244,46 @@ public class MainViewModel : ViewModelBase
 
     private async Task TranslateEmailAsync()
     {
-        if (ShowTranslation) { ShowTranslation = false; return; } // 再点一次切回原文
-        var body = SelectedEmailBody;
-        if (string.IsNullOrWhiteSpace(body))
+        System.Windows.Input.Mouse.OverrideCursor = System.Windows.Input.Cursors.Wait; // AI 翻译较耗时，先显示忙碌光标
+        try
         {
-            StatusText = "没有可翻译的邮件正文";
-            return;
-        }
-        // 切回原文后再点翻译：已有缓存则直接重新显示，不重复调用 AI
-        if (!string.IsNullOrEmpty(EmailTranslation))
-        {
+            if (ShowTranslation) { ShowTranslation = false; return; } // 再点一次切回原文
+            var body = SelectedEmailBody;
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                StatusText = "没有可翻译的邮件正文";
+                return;
+            }
+            // 切回原文后再点翻译：已有缓存则直接重新显示，不重复调用 AI
+            if (!string.IsNullOrEmpty(EmailTranslation))
+            {
+                ShowTranslation = true;
+                StatusText = "已显示翻译结果";
+                return;
+            }
+            if (string.IsNullOrEmpty(_workflow.Config.DeepSeekApiKey))
+            {
+                StatusText = "未配置 DeepSeek API Key，无法翻译";
+                return;
+            }
+            StatusText = "正在翻译邮件…";
+            using var ai = new DeepSeekService(_workflow.Config);
+            var translated = await ai.TranslateTextAsync(body);
+            if (string.IsNullOrWhiteSpace(translated))
+            {
+                StatusText = "翻译失败（DeepSeek 调用出错）";
+                return;
+            }
+            EmailTranslation = translated;
+            var emailId = SelectedEmail?.Email.Id;
+            if (emailId is > 0) _workflow.SetEmailTranslation(emailId.Value, translated); // 持久化缓存
             ShowTranslation = true;
-            StatusText = "已显示翻译结果";
-            return;
+            StatusText = "翻译完成";
         }
-        if (string.IsNullOrEmpty(_workflow.Config.DeepSeekApiKey))
+        finally
         {
-            StatusText = "未配置 DeepSeek API Key，无法翻译";
-            return;
+            System.Windows.Input.Mouse.OverrideCursor = null;
         }
-        StatusText = "正在翻译邮件…";
-        using var ai = new DeepSeekService(_workflow.Config);
-        var translated = await ai.TranslateTextAsync(body);
-        if (string.IsNullOrWhiteSpace(translated))
-        {
-            StatusText = "翻译失败（DeepSeek 调用出错）";
-            return;
-        }
-        EmailTranslation = translated;
-        var emailId = SelectedEmail?.Email.Id;
-        if (emailId is > 0) _workflow.SetEmailTranslation(emailId.Value, translated); // 持久化缓存
-        ShowTranslation = true;
-        StatusText = "翻译完成";
     }
 
     public string DbPath => App.Db.DbPath;
@@ -363,6 +371,68 @@ public class MainViewModel : ViewModelBase
         return result;
     }
 
+    /// <summary>把一组线索（按根邮件 Id，稳定）原地移动到新产品/客户分组，不重建整棵树（避免窗口跳转/闪烁）。
+    /// 数据库已由调用方更新（Emails + Threads 表），这里只增量调整 UI 树并保持选中。</summary>
+    public void MoveThreadsToGroups(IReadOnlyList<long> rootEmailIds, string product, string enterprise)
+    {
+        if (rootEmailIds.Count == 0) return;
+        // 记录当前选中（右侧详情），移动后恢复
+        var selEmailId = SelectedEmail?.Email.Id ?? 0;
+        var selRootId = SelectedThread?.Children.FirstOrDefault(c => c.IsRoot)?.Email.Id ?? 0;
+
+        foreach (var id in rootEmailIds)
+        {
+            var node = FindRootNode(id);
+            if (node == null) continue;
+            var prod = FindProductOf(node);
+            var cust = prod != null ? FindCustomerOf(prod) : null;
+            if (prod == null) continue;
+
+            // 1) 从旧分组移除（分组空则一并移除）
+            prod.Threads.Remove(node);
+            if (prod.Threads.Count == 0 && cust != null) cust.Products.Remove(prod);
+            if (cust != null && cust.Products.Count == 0) Customers.Remove(cust);
+
+            // 2) 更新内存中的线程数据（显示用；空值保持原样，与 DB 语义一致）
+            var t = node.ThreadOwner.Thread;
+            if (!string.IsNullOrEmpty(product)) t.Product = product;
+            if (!string.IsNullOrEmpty(enterprise)) t.Enterprise = enterprise;
+            node.RefreshThreadInfo();
+
+            // 3) 定位/创建新分组并插入
+            var custName = string.IsNullOrEmpty(t.Enterprise) ? "未分类客户" : t.Enterprise;
+            var prodName = string.IsNullOrEmpty(t.Product) ? "未分类产品" : t.Product;
+            var newCust = Customers.FirstOrDefault(c => c.Name == custName);
+            if (newCust == null)
+            {
+                newCust = new CustomerGroupViewModel(custName) { ExpandedByDefault = ExpandDepth >= 2 };
+                InsertCustomerSorted(newCust);
+            }
+            var newProd = newCust.Products.FirstOrDefault(p => p.Name == prodName);
+            if (newProd == null)
+            {
+                newProd = new ProductGroupViewModel(prodName) { ExpandedByDefault = ExpandDepth >= 3 };
+                InsertProductSorted(newCust, newProd);
+            }
+            InsertThreadSorted(newProd, node);
+            // 4) 按 LastActivity 重排线索与分组顺序
+            ReinsertThread(node);
+        }
+
+        // 恢复选中与多选高亮（节点已被移动，用稳定 Id 重新定位）
+        if (selEmailId > 0 && FindEmailNodeById(selEmailId) is { } en)
+        {
+            SelectedEmail = en;
+            SelectedThread = en.ThreadOwner;
+        }
+        else if (selRootId > 0 && FindRootNode(selRootId) is { } rn)
+        {
+            SelectedEmail = rn;
+            SelectedThread = rn.ThreadOwner;
+        }
+        UpdateSelectionHighlight();
+    }
+
     /// <summary>按根邮件 Id 重新选中对应线索（线程重建后 ThreadId 变化，用稳定的邮件 Id 定位）。</summary>
     public void ReselectByRootEmailIds(IEnumerable<long> rootEmailIds)
     {
@@ -379,11 +449,21 @@ public class MainViewModel : ViewModelBase
     private CancellationTokenSource? _autoSyncCts;
     private CancellationTokenSource? _manualSyncCts; // 手动同步的取消源（“停止同步”用它）
 
-    /// <summary>停止正在进行的（手动）同步。</summary>
+    /// <summary>停止正在进行的同步（手动 + 自动收取）。无进行中同步时不进入“正在停止…”状态。</summary>
     private void StopSync()
     {
-        _manualSyncCts?.Cancel();
+        var manual = _manualSyncCts;
+        var auto = _autoSyncCts;
+        if (manual == null && auto == null)
+        {
+            StatusText = "当前没有进行中的同步";
+            return;
+        }
+        manual?.Cancel();
+        // 自动收取（2 分钟轮询）下载时也必须取消，否则“停止同步”停不掉正在下载的同步
+        auto?.Cancel();
         StatusText = "正在停止同步…";
+        App.Log("StopSync", new Exception($"已请求停止同步（manual={(manual != null)}, auto={(auto != null)}）"));
     }
 
     /// <summary>创建进度报告器：更新状态栏文字，并从 “x/y” 消息解析百分比驱动进度条。</summary>
@@ -489,11 +569,51 @@ public class MainViewModel : ViewModelBase
             // ClearAllDataAsync 里的 StopAutoSync 会取消本延迟与同步。
             await Task.Delay(TimeSpan.FromSeconds(10), ct);
             if (ct.IsCancellationRequested) return;
+            // 后台自动同步：关键设置未完成则直接忽略（不弹窗询问、不启动自动收取）；
+            // 只有手动点“同步”时才做配置缺失检查（EnsureSyncConfig，弹窗询问是否去设置）
+            if (!HasSyncConfig()) return;
             await SyncAsync(ct);
             if (ct.IsCancellationRequested) return;
             StartAutoSync();
         }
         catch (OperationCanceledException) { }
+    }
+
+    /// <summary>仅判断邮箱同步配置（Zoho REST 或 IMAP）是否齐全，不弹窗（供后台自动同步静默判断）。</summary>
+    private bool HasSyncConfig()
+    {
+        var cfg = _workflow.Config;
+        return (!string.IsNullOrEmpty(cfg.ZohoClientId) && !string.IsNullOrEmpty(cfg.ZohoRefreshToken)) ||
+               (!string.IsNullOrEmpty(cfg.ImapHost) && !string.IsNullOrEmpty(cfg.ImapUsername));
+    }
+
+    /// <summary>同步前检查邮箱同步配置（Zoho REST 或 IMAP 任一配置即可）。
+    /// 未配置则弹窗提示并打开设置窗口，返回 false；已配置返回 true 继续同步。
+    /// DeepSeek 缺失不阻止同步（可选功能），仅在状态栏提示。</summary>
+    private bool EnsureSyncConfig()
+    {
+        // 设置窗口已打开（用户正在配置）→ 不做配置检查，避免在配置过程中再弹“是否打开设置”提示
+        if (Views.SettingsWindow.IsOpen) return false;
+        var cfg = _workflow.Config;
+        bool zoho = !string.IsNullOrEmpty(cfg.ZohoClientId) &&
+                    !string.IsNullOrEmpty(cfg.ZohoRefreshToken);
+        bool imap = !string.IsNullOrEmpty(cfg.ImapHost) &&
+                    !string.IsNullOrEmpty(cfg.ImapUsername);
+        if (zoho || imap)
+        {
+            if (string.IsNullOrEmpty(cfg.DeepSeekApiKey))
+                StatusText = "提示：尚未配置 DeepSeek API，AI 总结/标题将不可用（可在设置中配置）";
+            return true;
+        }
+
+        var missing = "· 邮箱同步（Zoho REST API 或 IMAP）";
+        if (string.IsNullOrEmpty(cfg.DeepSeekApiKey))
+            missing += "\n· DeepSeek API（AI 总结，可选）";
+        var msg = "以下配置尚未完成，无法同步邮件：\n\n" + missing +
+                  "\n\n是否现在打开设置窗口进行配置？";
+        if (MessageBox.Show(msg, "需要配置", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
+            OpenSettings();
+        return false;
     }
 
     /// <summary>重新加载线程并重建树（手工设置产品/客户后刷新）。</summary>
@@ -569,14 +689,17 @@ public class MainViewModel : ViewModelBase
         StatusText = "AI 总结已更新";
     }
 
-    private async Task SyncAsync(CancellationToken externalCt = default)
+    private async Task<bool> SyncAsync(CancellationToken externalCt = default)
     {
-        if (IsBusy) return;
+        if (IsBusy) return true;
+        // 同步时检查邮箱同步配置：Zoho REST 或 IMAP 均未配置 → 提示并打开设置，不进入同步
+        if (!EnsureSyncConfig()) return false;
         IsBusy = true;
         // 链接外部令牌（自动同步的取消）与手动取消源（停止同步），两者任一取消都会中断本次同步
         _manualSyncCts?.Dispose();
         _manualSyncCts = CancellationTokenSource.CreateLinkedTokenSource(externalCt);
         var ct = _manualSyncCts.Token;
+        App.Log("SyncAsync", new Exception("同步开始"));
         try
         {
             var progress = CreateProgress();
@@ -584,23 +707,31 @@ public class MainViewModel : ViewModelBase
             _threads = _workflow.LoadThreads();
             MergeThreads(_threads); // 增量合并新邮件到现有树，保留折叠层次
             StatusText = $"同步完成：新增 {n} 封邮件，共 {_threads.Count} 条线索";
+            App.Log("SyncAsync", new Exception($"同步完成 新增 {n}"));
         }
         catch (OperationCanceledException)
         {
-            // 同步被“停止同步”或自动同步取消：保留已同步的邮件，增量合并刷新界面
-            _threads = _workflow.LoadThreads();
-            MergeThreads(_threads);
-            StatusText = "同步已停止（已保留同步到的邮件）";
+            // 同步被“停止同步”或自动同步取消：立即反馈停止，不在此处重建/合并
+            // （取消时线程表未重建，LoadThreads/MergeThreads 拿不到新邮件且拖慢响应；
+            //   已同步的邮件已保留在库中，下次同步或启动时会重建显示）
+            App.Log("SyncAsync", new Exception("同步被取消（OperationCanceledException）"));
+            StatusText = "同步已停止（已保留已同步的邮件）";
         }
         catch (Exception ex)
         {
             // 已入库的邮件仍在：增量合并刷新界面，避免“同步失败 = 数据全部丢失”的错觉
-            _threads = _workflow.LoadThreads();
-            MergeThreads(_threads);
+            App.Log("SyncAsync", ex);
+            try
+            {
+                _threads = _workflow.LoadThreads();
+                MergeThreads(_threads);
+            }
+            catch (Exception mergeEx) { App.Log("SyncAsync.MergeAfterFail", mergeEx); }
             StatusText = $"同步失败：{ex.Message}（已保留已同步的邮件）";
         }
         finally
         {
+            App.Log("SyncAsync", new Exception("同步 finally 收尾"));
             IsBusy = false;
             ProgressIndeterminate = true;
             ProgressValue = 0;
@@ -608,15 +739,18 @@ public class MainViewModel : ViewModelBase
             _manualSyncCts?.Dispose();
             _manualSyncCts = null;
         }
+        // 已尝试执行同步（无论成败）：配置齐全返回 true，供 AutoSyncAndListen 判断是否启动自动收取
+        return true;
     }
 
     private void OpenSettings()
     {
         var oldMonitored = _workflow.Config.MonitoredAddresses.ToList();
-        var win = new Views.SettingsWindow(_workflow)
-        {
-            Owner = Application.Current.MainWindow
-        };
+        var win = new Views.SettingsWindow(_workflow);
+        // 仅当主窗口已显示才设为 Owner：主窗口未显示/隐藏到托盘时（如启动早期、窗口关闭到托盘），
+        // 给未显示的 Window 设 Owner 会抛 InvalidOperationException，导致设置窗口打不开
+        if (Application.Current.MainWindow is { IsVisible: true } owner)
+            win.Owner = owner;
         // 仅当点击「保存」才刷新数据并按最新设置重启自动收取；「取消」不触发任何同步
         if (win.ShowDialog() == true)
         {
@@ -704,6 +838,27 @@ public class MainViewModel : ViewModelBase
                     }
     }
 
+    /// <summary>把指定范围内的所有线索（客户/产品）的所有邮件标记为已读，并就地刷新加粗状态。</summary>
+    public void MarkGroupSeen(IEnumerable<EmailNodeViewModel> roots)
+    {
+        var rootsList = roots.ToList();
+        var ids = new List<long>();
+        foreach (var root in rootsList) CollectEmailIds(root, ids);
+        if (ids.Count == 0) return;
+        _workflow.MarkEmailsSeen(ids);
+        foreach (var root in rootsList)
+        {
+            ClearThreadNew(root); // 内存同步清除该范围内所有邮件的新标记
+            root.RefreshNewState();
+        }
+    }
+
+    private static void CollectEmailIds(EmailNodeViewModel n, List<long> ids)
+    {
+        ids.Add(n.Email.Id);
+        foreach (var c in n.Children) CollectEmailIds(c, ids);
+    }
+
     /// <summary>递归把某线索节点及其子树所有邮件的 IsNew 置为已读（配合“全部已读”内存刷新）。</summary>
     private static void ClearThreadNew(EmailNodeViewModel n)
     {
@@ -713,9 +868,30 @@ public class MainViewModel : ViewModelBase
 
     private void RebuildTree()
     {
+        // 保存当前选中（右侧详情面板），重建后按稳定 邮件 Id/根邮件 Id 恢复：
+        // 设置产品/客户、重命名企业等重建树后 ThreadId 会变，但邮件 Id 稳定；
+        // 不恢复的话，当前选中的线索被挪动后选中会丢失（SelectedEmail 残留树外旧对象）
+        var selEmailId = SelectedEmail?.Email.Id ?? 0;
+        var selRootId = SelectedThread?.Children.FirstOrDefault(c => c.IsRoot)?.Email.Id ?? 0;
+
         CaptureVmExpansion(); // 记录当前各节点的展开状态（含用户手动折叠），重建后保留
         BuildTree(_threads, _sortMode);
         if (_selectedThreadIds.Count > 0) UpdateSelectionHighlight(); // 重建后恢复多选高亮
+
+        // 恢复选中：优先精确到选中的邮件，其次恢复选中线索的根邮件
+        EmailNodeViewModel? restored = selEmailId > 0 ? FindEmailNodeById(selEmailId) : null;
+        restored ??= selRootId > 0 ? FindRootNode(selRootId) : null;
+        if (restored != null)
+        {
+            SelectedEmail = restored;
+            SelectedThread = restored.ThreadOwner;
+        }
+        else if (selEmailId > 0 || selRootId > 0)
+        {
+            // 原选中已不存在（如被搜索过滤）：清空，避免右侧面板残留失效引用
+            SelectedEmail = null;
+            SelectedThread = null;
+        }
     }
 
     // 重建树前捕获的展开状态（key：客户/产品名称、邮件 Id），用于自动同步等重建后保留用户的折叠层次
@@ -773,6 +949,7 @@ public class MainViewModel : ViewModelBase
                 _ => productGroups.OrderBy(g => g.Key, StringComparer.Ordinal)
             };
 
+            bool customerAllClosed = true; // 该企业下是否所有产品都已结束（结束→默认折叠企业）
             foreach (var pg in orderedProducts)
             {
                 var product = new ProductGroupViewModel(pg.Key)
@@ -780,7 +957,8 @@ public class MainViewModel : ViewModelBase
                     ExpandedByDefault = _vmExpansion.TryGetValue("p:" + pg.Key, out var pe) ? pe : ExpandDepth >= 3
                 };
                 // 同一产品下的所有邮件树一律按最后更新时间倒序（与全局排序模式无关）
-                var orderedThreads = pg.OrderByDescending(t => t.LastActivity);
+                var orderedThreads = pg.OrderByDescending(t => t.LastActivity).ToList();
+                bool productAllClosed = orderedThreads.Count > 0; // 该产品下是否所有线索都已结束（结束→默认折叠产品）
                 foreach (var t in orderedThreads)
                 {
                     // 工单层并入根邮件节点：状态/工单号/总结显示在根邮件上，不再有独立工单行
@@ -788,15 +966,36 @@ public class MainViewModel : ViewModelBase
                     foreach (var root in owner.Children)
                     {
                         SetEmailExpandDepth(root, ExpandDepth);
+                        // 线索已结束（已完成/已关闭/已合并）：默认折叠该线索（尊重用户手动展开）
+                        if (IsThreadClosed(t) && !_vmExpansion.ContainsKey("e:" + root.Email.Id))
+                            root.ExpandedByDefault = false;
                         product.Threads.Add(root);
                     }
+                    if (!IsThreadClosed(t)) productAllClosed = false;
                 }
+                // 产品下所有线索都已结束 → 产品默认折叠（尊重用户手动展开）
+                if (productAllClosed && !_vmExpansion.ContainsKey("p:" + pg.Key))
+                    product.ExpandedByDefault = false;
                 customer.Products.Add(product);
+                if (!productAllClosed) customerAllClosed = false;
             }
+            // 企业下所有产品都已结束 → 企业默认折叠（尊重用户手动展开）
+            if (customerAllClosed && !_vmExpansion.ContainsKey("c:" + cg.Key))
+                customer.ExpandedByDefault = false;
             list.Add(customer);
         }
         ReplaceCustomers(list);
     }
+
+    /// <summary>视为“已结束、无需继续关注”的线索状态：已完成/已解决、已关闭、合并或拆分为其他工单。</summary>
+    private static readonly HashSet<string> ClosedThreadStatuses = new(StringComparer.Ordinal)
+    {
+        "已解决", "已完成", "已关闭", "合并或拆分为其他工单"
+    };
+
+    /// <summary>线索是否已结束（已完成/已解决、已关闭、合并或拆分为其他工单），供“智能折叠”使用。</summary>
+    public static bool IsThreadClosed(TicketThread t)
+        => ClosedThreadStatuses.Contains(t.Status);
 
     /// <summary>递归设置邮件节点默认展开：优先保留重建前用户手动折叠状态，否则按展开层次（仅层次4展开）。</summary>
     private void SetEmailExpandDepth(EmailNodeViewModel node, int depth)
@@ -928,6 +1127,9 @@ public class MainViewModel : ViewModelBase
         foreach (var root in owner.Children)
         {
             SetEmailExpandDepth(root, ExpandDepth);
+            // 增量同步新增的已结束线索默认折叠（尊重用户手动展开）
+            if (IsThreadClosed(t) && !_vmExpansion.ContainsKey("e:" + root.Email.Id))
+                root.ExpandedByDefault = false;
             InsertThreadSorted(prod, root);
         }
         // 新线索的 LastActivity 可能改变所属 产品/客户 分组的 Max(LastActivity) 排序

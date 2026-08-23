@@ -13,8 +13,8 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>TicketManager.ico</ApplicationIcon>
     <!-- 版本号：AssemblyVersion/FileVersion，About 对话框显示 -->
-    <Version>1.0.2.0</Version>
-    <FileVersion>1.0.2.0</FileVersion>
+    <Version>1.0.4.0</Version>
+    <FileVersion>1.0.4.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -31,6 +31,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="ClosedXML" Version="0.104.2" />
     <PackageReference Include="Dapper" Version="2.1.35" />
     <PackageReference Include="MailKit" Version="4.7.1.1" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.8" />

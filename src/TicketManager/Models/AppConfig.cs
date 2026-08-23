@@ -43,7 +43,8 @@ public class AppConfig
     public string ZohoAccountId { get; set; } = ""; // 留空自动获取
 
     // ===== 其他 =====
-    public int FirstSyncDays { get; set; } = 7;
+    public int FirstSyncDays { get; set; } = 365;
     public int MaxBodyChars { get; set; } = 6000;
     public bool EnableAutoSync { get; set; } = true; // 新邮件到达时自动收取（IMAP IDLE）
+    public bool AutoTrackSupportMailboxes { get; set; } = true; // 扫描时自动发现并关注 @前含support、@后含manageengine/zohocorp 的客服邮箱
 }

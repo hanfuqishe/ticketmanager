@@ -144,7 +144,7 @@ public class EmailNodeViewModel : ViewModelBase
         $"发件人：{Sender}\n" +
         $"收件人：{Email.ToAddresses}\n" +
         $"抄送：{Email.CcAddresses}\n" +
-        $"时间：{Email.DateSent:yyyy-MM-dd HH:mm}\n" +
+        $"时间：{Email.DateSent.LocalDateTime:yyyy-MM-dd HH:mm}\n" +
         $"原标题：{Email.Subject}";
     public string Body => Email.BodyText;
 

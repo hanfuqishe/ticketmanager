@@ -1,10 +1,10 @@
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using MailKit.Net.Proxy;
 using TicketManager.Models;
 
 namespace TicketManager.Services;
@@ -33,24 +33,26 @@ public class ZohoMailApiService
         _http = CreateHttpClient();
     }
 
-    /// <summary>勾选“用于 Zoho REST API”时，让 HttpClient 经 代理（Socks4/Socks5/Http）访问 Zoho（直连不通的环境必需）。</summary>
+    /// <summary>总开关“启用代理”且勾选“用于 Zoho REST API”且配置了代理地址时，经 代理（Socks4/Socks5/Http）访问 Zoho。
+    /// 用 .NET 原生代理（WebProxy）而非自定义 ConnectCallback：原生代理的连接/握手可靠响应取消令牌与 ConnectTimeout，
+    /// 保证“停止同步”能立即中断下载（自定义 ConnectCallback + MailKit 握手不响应取消令牌，会导致下载阶段卡死）。</summary>
     private HttpClient CreateHttpClient()
     {
-        if (!_config.ProxyForZoho) return new HttpClient();
+        if (!_config.UseProxy || !_config.ProxyForZoho || string.IsNullOrEmpty(_config.ProxyHost))
+            return new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+        var scheme = _config.ProxyType switch
+        {
+            "Socks4" => "socks4",
+            "Http" => "http",
+            _ => "socks5"
+        };
         var handler = new SocketsHttpHandler
         {
-            ConnectCallback = async (context, ct) =>
-            {
-                IProxyClient proxy = _config.ProxyType switch
-                {
-                    "Socks4" => new Socks4Client(_config.ProxyHost, _config.ProxyPort),
-                    "Http" => new HttpProxyClient(_config.ProxyHost, _config.ProxyPort),
-                    _ => new Socks5Client(_config.ProxyHost, _config.ProxyPort)
-                };
-                return await proxy.ConnectAsync(context.DnsEndPoint.Host, context.DnsEndPoint.Port, ct);
-            }
+            Proxy = new WebProxy($"{scheme}://{_config.ProxyHost}:{_config.ProxyPort}"),
+            UseProxy = true,
+            ConnectTimeout = TimeSpan.FromSeconds(15), // 连接/握手 15 秒超时（原生代理生效，且随请求取消立即中断）
         };
-        return new HttpClient(handler);
+        return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
     }
 
     public string ApiBase => string.IsNullOrWhiteSpace(_config.ZohoApiBase)
@@ -76,6 +78,33 @@ public class ZohoMailApiService
         !string.IsNullOrEmpty(_config.ZohoClientId) &&
         !string.IsNullOrEmpty(_config.ZohoClientSecret) &&
         !string.IsNullOrEmpty(_config.ZohoRefreshToken);
+
+    /// <summary>Zoho sentDateInGMT 实际是“账号时区墙钟”，与真实 UTC（receivedTime）相差固定毫秒数；此为推导出的偏移。</summary>
+    private long _sentOffsetMs;
+
+    /// <summary>
+    /// 推导发送时间偏移：拉取最近一批邮件，取 min(sentDateInGMT - receivedTime)。
+    /// receivedTime 是真实 UTC，sentDateInGMT 是账号时区墙钟；自动/快速回复差最小，最接近真实偏移。
+    /// 不依赖不可靠的 timeZone 字段（实测其值为 IANA 名如 Asia/Shanghai，与 sentDateInGMT 实际偏移不符）。
+    /// </summary>
+    public async Task LoadAccountTimeZoneAsync(long accountId, CancellationToken ct = default)
+    {
+        try
+        {
+            var folders = await GetFoldersAsync(accountId, ct);
+            var inbox = folders.FirstOrDefault(f => f.Name.Equals("Inbox", StringComparison.OrdinalIgnoreCase));
+            if (inbox == null) return;
+            var list = await ListMessagesAsync(accountId, inbox.Id, 1, 30, ct);
+            long minDiff = long.MaxValue;
+            foreach (var m in list)
+            {
+                if (long.TryParse(m.SentDate, out var s) && long.TryParse(m.ReceivedTime, out var r) && s >= r)
+                    minDiff = Math.Min(minDiff, s - r);
+            }
+            if (minDiff != long.MaxValue) _sentOffsetMs = minDiff;
+        }
+        catch { /* 获取失败则不修正 */ }
+    }
 
     /// <summary>获取（必要时用 refresh token 刷新）Access Token；失败返回 null。</summary>
     public async Task<string?> GetAccessTokenAsync(CancellationToken ct = default)
@@ -204,7 +233,7 @@ public class ZohoMailApiService
             ToAddresses = ExtractAddresses(m.ToAddress),
             CcAddresses = ExtractAddresses(m.CcAddress),
             Subject = m.Subject,
-            DateSent = MsToDateTime(m.SentDate),
+            DateSent = MsToSentDateTime(m.SentDate),
             DateReceived = MsToDateTime(m.ReceivedTime),
             BodyText = body,
             ContentHash = ComputeHash(body)
@@ -228,7 +257,16 @@ public class ZohoMailApiService
     }
 
     private static DateTimeOffset MsToDateTime(string ms)
-        => long.TryParse(ms, out var v) ? DateTimeOffset.FromUnixTimeMilliseconds(v) : DateTimeOffset.MinValue;
+        => long.TryParse(ms, out var v)
+            ? DateTimeOffset.FromUnixTimeMilliseconds(v).ToLocalTime() // receivedTime 为真实 UTC，转本地时区（如北京时间）
+            : DateTimeOffset.MinValue;
+
+    /// <summary>sentDateInGMT 是“账号时区墙钟”：墙钟 - 推导偏移 = 真实 UTC，再转本地时区。</summary>
+    private DateTimeOffset MsToSentDateTime(string ms)
+    {
+        if (!long.TryParse(ms, out var v)) return DateTimeOffset.MinValue;
+        return DateTimeOffset.FromUnixTimeMilliseconds(v - _sentOffsetMs).ToLocalTime();
+    }
 
     /// <summary>HTML 正文转纯文本（与 IMAP 路径保持一致的处理）。</summary>
     private static string StripHtml(string html)

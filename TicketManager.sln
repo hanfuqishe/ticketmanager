@@ -29,6 +29,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ExpandProbe", "tools\Expand
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ExpMigrateProbe", "tools\ExpMigrateProbe\ExpMigrateProbe.csproj", "{4105A4DC-AD84-4541-A7FF-80FC2A018955}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TimeProbe", "tools\TimeProbe\TimeProbe.csproj", "{DCCA1DF1-E302-4438-A8FD-BBAEF8CB0E83}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -79,6 +81,10 @@ Global
 		{4105A4DC-AD84-4541-A7FF-80FC2A018955}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{4105A4DC-AD84-4541-A7FF-80FC2A018955}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{4105A4DC-AD84-4541-A7FF-80FC2A018955}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DCCA1DF1-E302-4438-A8FD-BBAEF8CB0E83}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DCCA1DF1-E302-4438-A8FD-BBAEF8CB0E83}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DCCA1DF1-E302-4438-A8FD-BBAEF8CB0E83}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DCCA1DF1-E302-4438-A8FD-BBAEF8CB0E83}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -95,5 +101,6 @@ Global
 		{8A44654A-C499-4D90-A1C1-D9162A90E2DB} = {E1AC983B-C3BB-49B3-B78C-AD48C53D73BF}
 		{F23098F7-340A-4F09-B878-5C1EEA68608E} = {E1AC983B-C3BB-49B3-B78C-AD48C53D73BF}
 		{4105A4DC-AD84-4541-A7FF-80FC2A018955} = {E1AC983B-C3BB-49B3-B78C-AD48C53D73BF}
+		{DCCA1DF1-E302-4438-A8FD-BBAEF8CB0E83} = {E1AC983B-C3BB-49B3-B78C-AD48C53D73BF}
 	EndGlobalSection
 EndGlobal

@@ -14,7 +14,7 @@
             <Button Content="取消" Width="90" Padding="8,4" Margin="10,0,0,0" IsCancel="True"/>
         </StackPanel>
 
-        <TabControl>
+        <TabControl x:Name="MainTab">
             <!-- ===== 同步设置（原 IMAP，已迁移 Zoho REST；仅保留通用同步项）===== -->
             <TabItem Header="同步设置">
                 <Grid Margin="16">
@@ -47,6 +47,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <TextBlock Grid.Row="0" Text="以下邮箱地址出现在邮件往来中时，该邮件才会被纳入监控（可配置多个）："
                                TextWrapping="Wrap" Foreground="#555"/>
@@ -69,6 +70,11 @@
                                 CommandParameter="{Binding SelectedItem, ElementName=AddressList}"
                                 Margin="8,0,0,0" Padding="12,4"/>
                     </StackPanel>
+                    <CheckBox Grid.Row="3" IsChecked="{Binding Config.AutoTrackSupportMailboxes}"
+                              Margin="0,12,0,0" Foreground="#555">
+                        <TextBlock Text="自动发现客服邮箱：扫描邮件时，发件/收件/抄送中，凡 @ 前包含 “support”、且 @ 后包含 “manageengine” 或 “zohocorp” 的邮箱地址自动加入关注（如 mdm-support@manageengine.com、support@zohocorp.com.cn）"
+                                   TextWrapping="Wrap"/>
+                    </CheckBox>
                 </Grid>
             </TabItem>
 
@@ -115,6 +121,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
@@ -132,6 +139,53 @@
                         <CheckBox Content="为工单智能总结状态" IsChecked="{Binding Config.EnableAiStatus}" Margin="0,0,20,0"/>
                         <CheckBox Content="主题未标注时用 AI 分析产品/客户" IsChecked="{Binding Config.EnableAiMeta}"/>
                     </StackPanel>
+
+                    <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Margin="8,6">
+                        <TextBlock Text="单封邮件发送给 AI 的最大字符数：" VerticalAlignment="Center"/>
+                        <TextBox Text="{Binding Config.MaxBodyChars}" Width="90" Padding="4" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="（超长正文截断后再发送，避免超出上下文限制）" Foreground="#888" FontSize="11" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                    </StackPanel>
+
+                    <!-- 分步骤获取 API Key 说明（含可点击链接） -->
+                    <ScrollViewer Grid.Row="5" Grid.ColumnSpan="2" VerticalScrollBarVisibility="Auto" Margin="0,14,0,0">
+                        <Border BorderBrush="#dce6f0" BorderThickness="1" CornerRadius="6" Padding="14" Background="#f8fafc">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <Path Data="{StaticResource IconDoc}" Fill="#009688" Width="16" Height="16" Stretch="Uniform" VerticalAlignment="Center"/>
+                                    <TextBlock Text="如何获取 API Key（蓝色文字可点击打开）" FontWeight="Bold" FontSize="14" Foreground="#1f3a5f" Margin="6,0,0,0"/>
+                                </StackPanel>
+
+                                <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,12,0,0">
+                                    <Run Text="① 注册 / 登录 DeepSeek 开放平台：　"/>
+                                    <Hyperlink NavigateUri="https://platform.deepseek.com/" RequestNavigate="Link_RequestNavigate">platform.deepseek.com（点此打开）</Hyperlink>
+                                </TextBlock>
+
+                                <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,6,0,0">
+                                    <Run Text="② 进入 API Keys 页面：　"/>
+                                    <Hyperlink NavigateUri="https://platform.deepseek.com/api_keys" RequestNavigate="Link_RequestNavigate">API Keys（点此打开）</Hyperlink>
+                                    <Run Text="　→ 点击「创建 API Key」→ 起个名字 → 创建。"/>
+                                </TextBlock>
+
+                                <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,6,0,0">
+                                    <Run Text="③ 创建后立即复制生成的 Key（以 "/><Run Text="sk-"/><Run Text=" 开头），它只显示一次，请妥善保存。"/>
+                                </TextBlock>
+
+                                <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,6,0,0">
+                                    <Run Text="④ 确保账户有余额：DeepSeek 按用量计费，需先充值才能调用。可在　"/>
+                                    <Hyperlink NavigateUri="https://platform.deepseek.com/usage" RequestNavigate="Link_RequestNavigate">用量与充值（点此打开）</Hyperlink>
+                                    <Run Text="　页面查看。"/>
+                                </TextBlock>
+
+                                <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,6,0,0">
+                                    <Run Text="⑤ 把 Key 填入本页上方「API Key」后点击「保存」。接口地址与模型保持默认即可。"/>
+                                </TextBlock>
+
+                                <TextBlock TextWrapping="Wrap" LineHeight="20" Margin="0,12,0,0" Foreground="#888" FontSize="11">
+                                    <Run Text="安全提示：API Key 属敏感信息，程序会用 Windows DPAPI 加密存储，请勿提交到代码仓库。"/>
+                                </TextBlock>
+                            </StackPanel>
+                        </Border>
+                    </ScrollViewer>
                 </Grid>
             </TabItem>
 
@@ -167,17 +221,6 @@
                 </Grid>
             </TabItem>
 
-            <!-- ===== 其他 ===== -->
-            <TabItem Header="其他">
-                <StackPanel Margin="16">
-                    <StackPanel Orientation="Horizontal" Margin="0,6">
-                        <TextBlock Text="单封邮件发送给 AI 的最大字符数：" VerticalAlignment="Center"/>
-                        <TextBox Text="{Binding Config.MaxBodyChars}" Width="90" Padding="4" Margin="8,0,0,0"/>
-                    </StackPanel>
-                    <TextBlock Text="说明：邮件正文过长时将被截断后再发送给 DeepSeek，以避免超出上下文限制。" 
-                               Foreground="#888" FontSize="11" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                </StackPanel>
-            </TabItem>
             <!-- ===== Zoho REST API ===== -->
             <TabItem Header="Zoho REST API">
                 <Grid Margin="16">

@@ -13,8 +13,8 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>TicketManager.ico</ApplicationIcon>
     <!-- 版本号：AssemblyVersion/FileVersion，About 对话框显示 -->
-    <Version>1.0.4.0</Version>
-    <FileVersion>1.0.4.0</FileVersion>
+    <Version>1.0.5.0</Version>
+    <FileVersion>1.0.5.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>

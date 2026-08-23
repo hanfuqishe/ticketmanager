@@ -2,7 +2,7 @@
 setlocal
 rem 工单邮件管理器 安装脚本（由 IExpress 自解压包解压后运行）
 set "DEST=%LOCALAPPDATA%\TicketManager"
-set "ZIP=%~dp0TicketManager-1.0.4-Portable.zip"
+set "ZIP=%~dp0TicketManager-1.0.5-Portable.zip"
 echo 正在安装到 %DEST% ...
 if exist "%DEST%" rd /s /q "%DEST%"
 md "%DEST%" 2>nul

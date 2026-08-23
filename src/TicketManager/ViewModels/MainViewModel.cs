@@ -826,16 +826,24 @@ public class MainViewModel : ViewModelBase
     /// <summary>把指定线索内的所有新同步邮件标记为已读（右键“全部已读”），并就地刷新加粗状态。</summary>
     public void MarkThreadSeen(long threadId)
     {
-        _workflow.MarkThreadSeen(threadId);
+        // 用稳定的邮件 Id 批量清除（而非 ThreadId）：线程重建后 ThreadId 会重新分配，
+        // 界面里的 ThreadId 可能与数据库不一致，按 ThreadId 更新会清 0 行 → 重启后仍显示未读
+        EmailNodeViewModel? target = null;
         foreach (var cust in Customers)
             foreach (var prod in cust.Products)
                 foreach (var root in prod.Threads)
                     if (root.Email.ThreadId == threadId)
                     {
-                        ClearThreadNew(root); // 内存同步清除该线索下所有邮件的新标记
-                        root.RefreshNewState();
+                        target = root;
                         break;
                     }
+        if (target == null) return;
+        var ids = new List<long>();
+        CollectEmailIds(target, ids);
+        if (ids.Count == 0) return;
+        _workflow.MarkEmailsSeen(ids);
+        ClearThreadNew(target); // 内存同步清除该线索下所有邮件的新标记
+        target.RefreshNewState();
     }
 
     /// <summary>把指定范围内的所有线索（客户/产品）的所有邮件标记为已读，并就地刷新加粗状态。</summary>

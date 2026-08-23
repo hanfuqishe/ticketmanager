@@ -15,6 +15,9 @@ public class AppConfig
     // ===== 关注的客服邮箱 =====
     public List<string> MonitoredAddresses { get; set; } = new();
 
+    // ===== 我方支持人员域名（同事邮箱的 @ 后缀；AI 方向标注时视为 [我]，避免误当客户） =====
+    public List<string> MySupportDomains { get; set; } = new();
+
     // ===== 域名→企业 映射（用于从抄送/收件人地址推断企业） =====
     public Dictionary<string, string> DomainEnterpriseMappings { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 

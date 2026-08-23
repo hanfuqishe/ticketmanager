@@ -22,7 +22,8 @@ public class DatabaseService : IDisposable
             dbPath = Path.Combine(dir, "ticketmanager.db");
         }
         DbPath = dbPath;
-        _connectionString = $"Data Source={DbPath}";
+        // Pooling=True：复用底层连接，避免频繁 Open/Close 的开销（Microsoft.Data.Sqlite 默认开启，此处显式声明）
+        _connectionString = $"Data Source={DbPath};Pooling=True";
     }
 
     public string DbPath { get; }
@@ -31,6 +32,11 @@ public class DatabaseService : IDisposable
     {
         var conn = new SqliteConnection(_connectionString);
         conn.Open();
+        // 每连接轻量 PRAGMA：WAL 下 NORMAL 同步足够安全且快（避免每写必 fsync）；
+        // busy_timeout 防止后台同步写与界面读并发时的 SQLITE_BUSY；temp_store=MEMORY 加快临时表/排序
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000; PRAGMA temp_store = MEMORY;";
+        cmd.ExecuteNonQuery();
         return conn;
     }
 
@@ -72,6 +78,14 @@ public class DatabaseService : IDisposable
             );
             CREATE INDEX IF NOT EXISTS IX_Emails_MessageId ON Emails(MessageId);
             CREATE INDEX IF NOT EXISTS IX_Emails_ThreadId ON Emails(ThreadId);
+            -- 同步去重 / 已关注线索延续判断 的高频等值查询
+            CREATE INDEX IF NOT EXISTS IX_Emails_Folder_Uid ON Emails(Folder, Uid);
+            CREATE INDEX IF NOT EXISTS IX_Emails_Folder_ZohoMessageId ON Emails(Folder, ZohoMessageId);
+            CREATE INDEX IF NOT EXISTS IX_Emails_ZohoThreadId ON Emails(ZohoThreadId);
+            -- 每个线程首封查询（ORDER BY DateSent）与线索内邮件按时间排序
+            CREATE INDEX IF NOT EXISTS IX_Emails_ThreadId_DateSent ON Emails(ThreadId, DateSent);
+            -- 部分索引：IsNew 只有 0/1，全列索引选择性差，仅索引值为 1 的行
+            CREATE INDEX IF NOT EXISTS IX_Emails_IsNew ON Emails(IsNew) WHERE IsNew = 1;
 
             CREATE TABLE IF NOT EXISTS Threads (
                 Id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -97,10 +111,20 @@ public class DatabaseService : IDisposable
             conn.Execute("ALTER TABLE Emails ADD COLUMN Translation TEXT NOT NULL DEFAULT ''");
         if (!emailCols.Contains("IsNew"))
             conn.Execute("ALTER TABLE Emails ADD COLUMN IsNew INTEGER NOT NULL DEFAULT 0");
+        if (!emailCols.Contains("MetaAnalyzed"))
+        {
+            conn.Execute("ALTER TABLE Emails ADD COLUMN MetaAnalyzed INTEGER NOT NULL DEFAULT 0");
+            // 老库历史邮件一律视为“已尝试过 AI 元数据分析”：避免历史积压的缺字段邮件
+            // （多为 AI 分析不出的厂商客服邮件）在之后每次同步都被重新交给 AI
+            conn.Execute("UPDATE Emails SET MetaAnalyzed = 1 WHERE MetaAnalyzed = 0");
+        }
         var threadCols = new HashSet<string>(conn.Query<string>(
             "SELECT name FROM pragma_table_info('Threads')"));
         if (!threadCols.Contains("StatusReason"))
             conn.Execute("ALTER TABLE Threads ADD COLUMN StatusReason TEXT NOT NULL DEFAULT ''");
+
+        // WAL 模式：后台同步写 + 界面读 并发时不互相阻塞（journal_mode 是持久化的数据库属性，仅首次设置生效）
+        conn.Execute("PRAGMA journal_mode = WAL;");
     }
 
     // ================= Settings =================
@@ -232,6 +256,52 @@ public class DatabaseService : IDisposable
         return rows.Select(MapEmail).ToList();
     }
 
+    /// <summary>只加载元数据列（不含 BodyText/Translation/AiTitle/ContentHash 等大字段）。
+    /// 用于 重解析主题/AI 元数据分析/域名映射 等只需 主题·地址·工单 的批处理，避免全表拉取正文。</summary>
+    public List<EmailMessage> LoadEmailsMeta()
+    {
+        using var conn = Open();
+        var rows = conn.Query("""
+            SELECT Id, Folder, Uid, MessageId, InReplyTo, "References", ZohoMessageId, ZohoThreadId,
+                   FromAddress, FromName, ToAddresses, CcAddresses, Subject, AiTitle,
+                   DateSent, DateReceived, ThreadId, TicketNumber, Product, Enterprise, FaultDescription, IsNew
+            FROM Emails
+            """).ToList();
+        return rows.Select(MapEmailLight).ToList();
+    }
+
+    /// <summary>只加载“缺 产品/客户 且 尚未尝试过 AI 元数据分析”的邮件（MetaAnalyzed=0）。
+    /// 避免每次同步都把历史积压的缺字段邮件（多为分析不出的厂商客服邮件）反复交给 AI。</summary>
+    public List<EmailMessage> LoadEmailsMissingMeta()
+    {
+        using var conn = Open();
+        var rows = conn.Query("""
+            SELECT Id, Folder, Uid, MessageId, InReplyTo, "References", ZohoMessageId, ZohoThreadId,
+                   FromAddress, FromName, ToAddresses, CcAddresses, Subject, AiTitle,
+                   DateSent, DateReceived, ThreadId, TicketNumber, Product, Enterprise, FaultDescription, IsNew
+            FROM Emails
+            WHERE (Product = '' OR Enterprise = '') AND MetaAnalyzed = 0
+            """).ToList();
+        return rows.Select(MapEmailLight).ToList();
+    }
+
+    /// <summary>标记某封邮件“已尝试过 AI 元数据分析”（无论成功与否），下次同步不再重复分析。</summary>
+    public void MarkEmailMetaAnalyzed(long id)
+    {
+        using var conn = Open();
+        conn.Execute("UPDATE Emails SET MetaAnalyzed = 1 WHERE Id = @id", new { id });
+    }
+
+    /// <summary>批量标记“已尝试过 AI 元数据分析”。</summary>
+    public void MarkEmailsMetaAnalyzed(IEnumerable<long> ids)
+    {
+        var idList = ids.Distinct().ToList();
+        if (idList.Count == 0) return;
+        using var conn = Open();
+        foreach (var chunk in idList.Chunk(500))
+            conn.Execute("UPDATE Emails SET MetaAnalyzed = 1 WHERE Id IN @ids", new { ids = chunk });
+    }
+
     public List<EmailMessage> GetEmailsPendingTitle()
     {
         using var conn = Open();
@@ -277,7 +347,7 @@ public class DatabaseService : IDisposable
     public List<string> GetKnownProducts()
     {
         var set = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var e in LoadAllEmails())
+        foreach (var e in LoadEmailsMeta())
         {
             var parsed = SubjectParser.Parse(e.Subject);
             if (parsed != null && parsed.Product.Length > 0 && parsed.Product == e.Product)
@@ -378,18 +448,27 @@ public class DatabaseService : IDisposable
     /// <summary>
     /// 清空每个线程首封邮件的 AI 标题：中文主题的首封保留原主题（清空 AI 标题）；
     /// 英文主题的首封保留 AI 翻译标题（不在此清空）。
+    /// 一次查询取出首封 (Id, Subject) 后在内存判断，再批量更新，避免原先逐封 SELECT+UPDATE 的 N+1 往返。
     /// </summary>
     public void ClearFirstEmailTitles()
     {
-        var firstIds = GetFirstEmailIdsPerThread();
-        if (firstIds.Count == 0) return;
         using var conn = Open();
-        foreach (var id in firstIds)
-        {
-            var subject = conn.ExecuteScalar<string>("SELECT Subject FROM Emails WHERE Id=@id", new { id }) ?? "";
-            if (!string.IsNullOrEmpty(subject) && !SubjectParser.ContainsCjk(subject)) continue; // 英文：保留翻译
-            conn.Execute("UPDATE Emails SET AiTitle='' WHERE Id=@id", new { id });
-        }
+        var firsts = conn.Query("""
+            SELECT e.Id, e.Subject FROM Emails e
+            WHERE e.ThreadId > 0
+              AND e.Id = (
+                  SELECT e2.Id FROM Emails e2
+                  WHERE e2.ThreadId = e.ThreadId
+                  ORDER BY e2.DateSent, e2.Id
+                  LIMIT 1
+              )
+            """).ToList();
+        var toClear = firsts
+            .Where(r => { var s = (string)r.Subject; return !string.IsNullOrEmpty(s) && SubjectParser.ContainsCjk(s); })
+            .Select(r => (long)r.Id)
+            .ToList();
+        foreach (var chunk in toClear.Chunk(500))
+            conn.Execute("UPDATE Emails SET AiTitle='' WHERE Id IN @ids", new { ids = chunk });
     }
 
     // ================= Threads =================
@@ -431,8 +510,15 @@ public class DatabaseService : IDisposable
                     LastActivity = t.LastActivity.ToString("o")
                 }, tx);
             t.Id = tid;
-            foreach (var e in t.Emails)
-                conn.Execute("UPDATE Emails SET ThreadId = @tid WHERE Id = @id", new { tid, id = e.Id }, tx);
+        }
+        // 批量写回 ThreadId：整树重建时邮件量大，原先逐封 UPDATE 很慢，改为按线程分块 IN 更新
+        foreach (var t in threads)
+        {
+            if (t.Emails.Count == 0) continue;
+            var ids = t.Emails.Select(e => e.Id).ToList();
+            foreach (var chunk in ids.Chunk(500))
+                conn.Execute("UPDATE Emails SET ThreadId = @tid WHERE Id IN @ids",
+                    new { tid = t.Id, ids = chunk }, tx);
         }
         tx.Commit();
     }
@@ -571,6 +657,33 @@ public class DatabaseService : IDisposable
     }
 
     // ================= mapping =================
+
+    /// <summary>元数据行映射：与 MapEmail 相同，但 BodyText/Translation/AiTitle/ContentHash 保持空（对应 LoadEmailsMeta 未查询的列）。</summary>
+    private static EmailMessage MapEmailLight(dynamic r) => new()
+    {
+        Id = (long)r.Id,
+        Folder = (string)r.Folder,
+        Uid = (uint)(long)r.Uid,
+        MessageId = (string)r.MessageId,
+        InReplyTo = (string)r.InReplyTo,
+        References = (string)r.References,
+        ZohoMessageId = (string)r.ZohoMessageId,
+        ZohoThreadId = r.ZohoThreadId == null ? null : (long)r.ZohoThreadId,
+        FromAddress = (string)r.FromAddress,
+        FromName = (string)r.FromName,
+        ToAddresses = (string)r.ToAddresses,
+        CcAddresses = (string)r.CcAddresses,
+        Subject = (string)r.Subject,
+        AiTitle = (string)r.AiTitle,
+        DateSent = ParseDate((string)r.DateSent),
+        DateReceived = ParseDate((string)r.DateReceived),
+        ThreadId = (long)r.ThreadId,
+        TicketNumber = (string)r.TicketNumber,
+        Product = (string)r.Product,
+        Enterprise = (string)r.Enterprise,
+        FaultDescription = (string)r.FaultDescription,
+        IsNew = (long)r.IsNew != 0
+    };
 
     private static EmailMessage MapEmail(dynamic r) => new()
     {

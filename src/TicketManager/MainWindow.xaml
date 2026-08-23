@@ -419,6 +419,14 @@
                                 <TextBlock Text=" 跳转新邮件" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Button>
+                        <Button Command="{Binding SyncCommand}" MinWidth="72" Padding="10,3"
+                                FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"
+                                ToolTip="同步邮件（Ctrl+S）">
+                            <StackPanel Orientation="Horizontal">
+                                <Path Data="{StaticResource IconSync}" Fill="#1565C0" Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center"/>
+                                <TextBlock Text=" 同步" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Button>
                     </StackPanel>
                 </Border>
                 <TreeView x:Name="TreeView" ItemsSource="{Binding Customers}"

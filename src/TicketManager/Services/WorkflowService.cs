@@ -32,6 +32,7 @@ public class WorkflowService
             ImapFolder = StrOr(_db.GetSetting("imap_folder"), "INBOX"),
             ImapSentFolder = _db.GetSetting("imap_sent_folder"),
             MonitoredAddresses = SplitList(_db.GetSetting("monitored_addresses")),
+            MySupportDomains = SplitList(_db.GetSetting("my_support_domains")),
             DomainEnterpriseMappings = ParseMappings(_db.GetSetting("domain_mappings")),
 
             DeepSeekApiKey = CredentialService.Unprotect(_db.GetSetting("deepseek_key")),
@@ -78,6 +79,7 @@ public class WorkflowService
         _db.SetSetting("imap_folder", c.ImapFolder);
         _db.SetSetting("imap_sent_folder", c.ImapSentFolder);
         _db.SetSetting("monitored_addresses", string.Join(";", c.MonitoredAddresses));
+        _db.SetSetting("my_support_domains", string.Join(";", c.MySupportDomains));
         _db.SetSetting("domain_mappings", JsonSerializer.Serialize(c.DomainEnterpriseMappings));
 
         _db.SetSetting("deepseek_key", CredentialService.Protect(c.DeepSeekApiKey));
@@ -613,7 +615,7 @@ public class WorkflowService
     /// <summary>对库中所有邮件重新解析主题，补齐 工单号/产品/客户/故障 字段（幂等）。</summary>
     public void ReparseSubjects()
     {
-        var all = _db.LoadAllEmails();
+        var all = _db.LoadEmailsMeta();
         foreach (var e in all)
         {
             var parsed = SubjectParser.Parse(e.Subject);
@@ -655,7 +657,7 @@ public class WorkflowService
     {
         var mappings = _config.DomainEnterpriseMappings;
         if (mappings.Count == 0) return;
-        var all = _db.LoadAllEmails();
+        var all = _db.LoadEmailsMeta();
         foreach (var e in all)
         {
             if (!string.IsNullOrEmpty(e.Enterprise)) continue;
@@ -704,7 +706,7 @@ public class WorkflowService
         var serviceDomains = GetServiceDomains();
         var toAdd = new List<(string Domain, string Enterprise)>();
 
-        foreach (var e in _db.LoadAllEmails())
+        foreach (var e in _db.LoadEmailsMeta())
         {
             // 仅当主题本身用标签（方括弧）标注了企业，才作为学习依据
             var parsed = SubjectParser.Parse(e.Subject);
@@ -782,9 +784,11 @@ public class WorkflowService
     private async Task EnrichMissingMetaAsync(IProgress<string>? progress, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(_config.DeepSeekApiKey)) return;
-        // 企业名优先用 域名→企业 映射（廉价字符串匹配）：命中则直接填企业、跳过 AI（即使产品仍缺），大幅减少 AI 调用
+        // 只分析“尚未尝试过 AI 元数据分析”的缺字段邮件（MetaAnalyzed=0）：
+        // 老库历史积压的缺字段邮件（多为分析不出的厂商客服邮件）已被迁移标记为已尝试，不再每次同步反复交给 AI
         var pending = new List<EmailMessage>();
-        foreach (var e in _db.LoadAllEmails())
+        var mappedIds = new List<long>(); // 已用 域名→企业 映射补全的，也标记为已尝试
+        foreach (var e in _db.LoadEmailsMissingMeta())
         {
             if (!string.IsNullOrEmpty(e.Product) && !string.IsNullOrEmpty(e.Enterprise)) continue;
             if (string.IsNullOrEmpty(e.Enterprise))
@@ -793,30 +797,39 @@ public class WorkflowService
                 if (!string.IsNullOrEmpty(ent))
                 {
                     _db.UpdateEmailMeta(e.Id, new ParsedSubject(e.TicketNumber, e.Product, ent, e.FaultDescription));
-                    continue; // 企业已由域名映射确定，不再调 AI
+                    mappedIds.Add(e.Id); // 企业已由域名映射确定，不再调 AI
+                    continue;
                 }
             }
             if (string.IsNullOrEmpty(e.Product) || string.IsNullOrEmpty(e.Enterprise))
                 pending.Add(e);
         }
-        if (pending.Count == 0) return;
-        using var ai = new DeepSeekService(_config);
-        int done = 0;
-        var tasks = pending.Select(async e =>
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            var r = await ai.ExtractMetaAsync(e);
-            if (r != null)
+            if (pending.Count == 0) return;
+            using var ai = new DeepSeekService(_config);
+            int done = 0;
+            var tasks = pending.Select(async e =>
             {
-                var product = string.IsNullOrEmpty(e.Product) ? r.Value.Product : e.Product;
-                var enterprise = string.IsNullOrEmpty(e.Enterprise) ? r.Value.Enterprise : e.Enterprise;
-                enterprise = ResolveEnterpriseName(enterprise); // 英文企业名对照 域名→企业 映射表翻译成中文
-                _db.UpdateEmailMeta(e.Id, new ParsedSubject(e.TicketNumber, product, enterprise, e.FaultDescription));
-            }
-            var d = Interlocked.Increment(ref done);
-            progress?.Report($"正在分析产品/客户… {d}/{pending.Count}");
-        });
-        await Task.WhenAll(tasks);
+                ct.ThrowIfCancellationRequested();
+                var r = await ai.ExtractMetaAsync(e);
+                if (r != null)
+                {
+                    var product = string.IsNullOrEmpty(e.Product) ? r.Value.Product : e.Product;
+                    var enterprise = string.IsNullOrEmpty(e.Enterprise) ? r.Value.Enterprise : e.Enterprise;
+                    enterprise = ResolveEnterpriseName(enterprise); // 英文企业名对照 域名→企业 映射表翻译成中文
+                    _db.UpdateEmailMeta(e.Id, new ParsedSubject(e.TicketNumber, product, enterprise, e.FaultDescription));
+                }
+                var d = Interlocked.Increment(ref done);
+                progress?.Report($"正在分析产品/客户… {d}/{pending.Count}");
+            });
+            await Task.WhenAll(tasks);
+        }
+        finally
+        {
+            // 无论 AI 成功与否，本次处理过的邮件都标记“已尝试”，下次同步不再重复分析
+            _db.MarkEmailsMetaAnalyzed(pending.Select(e => e.Id).Concat(mappedIds));
+        }
     }
 
     /// <summary>清空下载的本地邮件与工单（保留全部配置）。与同步共用同一把锁，避免清空与同步并发写库。</summary>
@@ -912,13 +925,18 @@ public class WorkflowService
         var threads = _db.LoadThreads();
         var emails = _db.LoadAllEmails();
         var displayByThread = new ThreadBuilder().BuildDisplayByThread(emails);
+        // 按 ThreadId 一次性分组，避免每个线程都对全量邮件线性过滤（O(T×E) → O(E)）
+        var emailsByThread = emails.Where(e => e.ThreadId > 0)
+            .GroupBy(e => e.ThreadId)
+            .ToDictionary(g => g.Key, g => g.OrderBy(e => e.DateSent).ToList());
         foreach (var t in threads)
         {
             if (displayByThread.TryGetValue(t.Id, out var roots))
                 t.DisplayRoots = roots;
             // 让 t.Emails 与 DisplayRoots 共享同一批 EmailMessage 对象：
             // 否则点击清除某封邮件的 IsNew 不会反映到 HasNewMail（根线索加粗不消失）
-            t.Emails = emails.Where(e => e.ThreadId == t.Id).OrderBy(e => e.DateSent).ToList();
+            if (emailsByThread.TryGetValue(t.Id, out var list)) t.Emails = list;
+            else t.Emails = new List<EmailMessage>();
         }
         return threads;
     }

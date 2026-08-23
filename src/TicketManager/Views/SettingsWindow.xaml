@@ -78,6 +78,39 @@
                 </Grid>
             </TabItem>
 
+            <!-- ===== 我方支持域名（同事邮箱） ===== -->
+            <TabItem Header="我方域名（同事）">
+                <Grid Margin="16">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0"
+                               Text="配置我方支持人员（同事）邮箱的 @ 后缀域名。邮件往来中出现这些域名的账户会被视为「我方」（[我]），AI 归纳工单状态时不会把它们误当客户。多个域名用分号或逐个添加，如 manageengine.cn、zohomail.com"
+                               TextWrapping="Wrap" Foreground="#555"/>
+                    <ListBox x:Name="SupportDomainList" Grid.Row="1" ItemsSource="{Binding MySupportDomains}" Margin="0,10"
+                             BorderBrush="#ccc">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal">
+                                    <Path Data="{StaticResource IconEmail}" Fill="#43A047" Width="13" Height="13" Stretch="Uniform" VerticalAlignment="Center"/>
+                                    <TextBlock Text="{Binding}"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <StackPanel Grid.Row="2" Orientation="Horizontal">
+                        <TextBox Text="{Binding NewSupportDomain, UpdateSourceTrigger=PropertyChanged}" Width="320" Padding="4"
+                                 VerticalAlignment="Center" ToolTip="邮箱域名后缀，如 manageengine.cn"/>
+                        <Button Content="添加" Command="{Binding AddSupportDomainCommand}" Margin="8,0,0,0" Padding="12,4"/>
+                        <Button Content="删除选中" Command="{Binding RemoveSupportDomainCommand}"
+                                CommandParameter="{Binding SelectedItem, ElementName=SupportDomainList}"
+                                Margin="8,0,0,0" Padding="12,4"/>
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+
             <!-- ===== 域名→企业 ===== -->
             <TabItem Header="域名→企业">
                 <Grid Margin="16">

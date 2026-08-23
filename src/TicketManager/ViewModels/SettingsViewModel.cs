@@ -14,6 +14,14 @@ public class SettingsViewModel : ViewModelBase
 
     public ObservableCollection<string> MonitoredAddresses { get; } = new();
 
+    public ObservableCollection<string> MySupportDomains { get; } = new();
+
+    private string _newSupportDomain = "";
+    public string NewSupportDomain { get => _newSupportDomain; set => Set(ref _newSupportDomain, value); }
+
+    public ICommand AddSupportDomainCommand { get; }
+    public ICommand RemoveSupportDomainCommand { get; }
+
     public string[] ProxyTypes { get; } = { "Socks4", "Socks5", "Http" };
 
     private int _selectedProxyIndex = 1;
@@ -47,6 +55,8 @@ public class SettingsViewModel : ViewModelBase
         _config = workflow.LoadConfig();
         foreach (var a in _config.MonitoredAddresses)
             MonitoredAddresses.Add(a);
+        foreach (var d in _config.MySupportDomains)
+            MySupportDomains.Add(d);
         EnableAutoSync = _config.EnableAutoSync;
 
         var idx = Array.IndexOf(ProxyTypes, _config.ProxyType);
@@ -56,6 +66,12 @@ public class SettingsViewModel : ViewModelBase
         RemoveAddressCommand = new RelayCommand(p =>
         {
             if (p is string s) MonitoredAddresses.Remove(s);
+        });
+
+        AddSupportDomainCommand = new RelayCommand(_ => AddSupportDomain());
+        RemoveSupportDomainCommand = new RelayCommand(p =>
+        {
+            if (p is string s) MySupportDomains.Remove(s);
         });
 
         foreach (var kv in _config.DomainEnterpriseMappings)
@@ -77,6 +93,15 @@ public class SettingsViewModel : ViewModelBase
         NewAddress = "";
     }
 
+    private void AddSupportDomain()
+    {
+        var d = NewSupportDomain.Trim().ToLowerInvariant();
+        if (d.Length == 0) return;
+        if (!MySupportDomains.Any(x => string.Equals(x, d, StringComparison.OrdinalIgnoreCase)))
+            MySupportDomains.Add(d);
+        NewSupportDomain = "";
+    }
+
     private void AddMapping()
     {
         var d = NewDomain.Trim().ToLowerInvariant();
@@ -91,6 +116,7 @@ public class SettingsViewModel : ViewModelBase
     public void Save()
     {
         _config.MonitoredAddresses = MonitoredAddresses.ToList();
+        _config.MySupportDomains = MySupportDomains.ToList();
         var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var entry in DomainMappings)
         {

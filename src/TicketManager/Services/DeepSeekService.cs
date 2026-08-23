@@ -74,9 +74,13 @@ public class DeepSeekService : IDisposable
             "邮件往来中每封已标注方向：[我]=客服本人发出的邮件，[客服]=技术支持/厂商客服发出的邮件，[客户]=客户发出的邮件。" +
             "总结时必须严格区分客户与客服的意见：客户提出的需求、问题、不满、反馈应归为客户的意见；" +
             "[我]/[客服] 发出的内容是客服的处理过程、判断与建议，属于我方/客服方，不要把这些说成是客户的意见。" +
-            "方向判断：看最后一封邮件的发件人。若最后一封是客户发的（如客户刚上传日志/提供信息），" +
-            "说明轮到客服/技术支持回复，状态应为「等待客服回复」或「处理中」；" +
-            "若最后一封是客服/技术支持发的（正在等客户提供信息或确认），才用「等待客户回复」。";
+            "方向判断（决定状态的核心）：状态表示『当前卡在哪、要不要催』，务必结合邮件内容判断，而不是只看最后一封发件人。" +
+            "三个状态的区别（重点，务必遵守）：" +
+            "- 「处理中」：厂商客服/技术支持已明确表态在处理——如 We will check with our team and update you / We are working on it / Noted, will update you / 正在跟进、正在排查。已受理、正在推进，暂时不用催。" +
+            "- 「等待客服回复」：轮到厂商客服/技术支持回应，但对方尚未表态（客户刚提问/催进度、需求刚转达，客服还没有任何“会处理”的确认）→ 需要去催厂商客服。" +
+            "- 「等待客户回复」：轮到客户回应——客服向客户提问、要求提供信息/确认/复现，或客服已回复完毕在等客户确认。" +
+            "判定要领：厂商客服一旦说过“会跟进/正在处理”（哪怕只是 Noted, will update you），就用「处理中」，不要再写「等待客服回复」；" +
+            "只有客服确实还没任何表态、需要去催时才用「等待客服回复」；绝不能把“客服在跟进”写成「等待客户回复」。";
 
         var userContent = new StringBuilder();
         userContent.AppendLine($"【工单号】{thread.TicketNumber}  产品：{thread.Product}  客户：{thread.Enterprise}");
@@ -107,31 +111,50 @@ public class DeepSeekService : IDisposable
             App.Log("DeepSeek.ParseStatus", new Exception("无法从响应解析出『状态：』行，原始响应: " + (resp.Length > 400 ? resp[..400] : resp)));
             return null;
         }
-        status = CorrectWaitingDirection(status, thread);
         return (status, string.IsNullOrEmpty(summary) ? resp.Trim() : summary);
     }
 
-    /// <summary>按发件人地址标注邮件方向：自己的邮箱→[我]，关注客服邮箱→[客服]，否则→[客户]。</summary>
+    /// <summary>按发件人地址标注邮件方向：自己的邮箱或我方同事域名→[我]，关注客服邮箱→[客服]，否则→[客户]。</summary>
     private string DirectionLabel(string fromAddress)
     {
         if (string.IsNullOrEmpty(fromAddress)) return "[客户]";
-        if (string.Equals(fromAddress, _config.ImapUsername, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(fromAddress, _config.ImapUsername, StringComparison.OrdinalIgnoreCase) ||
+            IsMySupportDomain(fromAddress)) // 我方支持人员（同事）域名 → [我]
             return "[我]";
-        if (_config.MonitoredAddresses.Any(m => string.Equals(fromAddress, m, StringComparison.OrdinalIgnoreCase)))
+        // 厂商客服邮箱（support@manageengine/zohocorp）即使未被关注也算客服，避免被误标为客户
+        if (_config.MonitoredAddresses.Any(m => string.Equals(fromAddress, m, StringComparison.OrdinalIgnoreCase)) ||
+            IsSupportMailbox(fromAddress))
             return "[客服]";
         return "[客户]";
     }
 
-    /// <summary>按“最后一封邮件”的发件方向纠正 等待类 状态的归属，避免与总结自相矛盾。</summary>
-    private string CorrectWaitingDirection(string status, TicketThread thread)
+    /// <summary>邮箱 @ 后缀是否命中「我方支持人员域名」（精确或子域匹配），如 manageengine.cn / zohomail.com。</summary>
+    private bool IsMySupportDomain(string fromAddress)
     {
-        if (status is not ("等待客户回复" or "等待客服回复")) return status;
-        var last = thread.Emails.OrderBy(e => e.DateSent).LastOrDefault();
-        if (last == null || string.IsNullOrEmpty(last.FromAddress)) return status;
-        var supportSpokeLast =
-            string.Equals(last.FromAddress, _config.ImapUsername, StringComparison.OrdinalIgnoreCase) ||
-            _config.MonitoredAddresses.Any(m => string.Equals(last.FromAddress, m, StringComparison.OrdinalIgnoreCase));
-        return supportSpokeLast ? "等待客户回复" : "等待客服回复";
+        if (_config.MySupportDomains.Count == 0) return false;
+        var at = fromAddress.LastIndexOf('@');
+        if (at < 0 || at == fromAddress.Length - 1) return false;
+        var domain = fromAddress[(at + 1)..].Trim();
+        foreach (var d in _config.MySupportDomains)
+        {
+            var dd = d.Trim();
+            if (dd.Length == 0) continue;
+            if (string.Equals(dd, domain, StringComparison.OrdinalIgnoreCase) ||
+                domain.EndsWith("." + dd, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>@ 前含 support、@ 后含 manageengine 或 zohocorp 的厂商客服邮箱（与自动关注规则一致）。</summary>
+    private static bool IsSupportMailbox(string addr)
+    {
+        var at = addr.IndexOf('@');
+        if (at <= 0 || at == addr.Length - 1) return false;
+        var domain = addr[(at + 1)..];
+        return addr[..at].Contains("support", StringComparison.OrdinalIgnoreCase) &&
+               (domain.Contains("manageengine", StringComparison.OrdinalIgnoreCase) ||
+                domain.Contains("zohocorp", StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>

@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using ClosedXML.Excel;
@@ -175,6 +176,26 @@ public partial class MainWindow : Window
         Show();
         WindowState = WindowState.Normal;
         Activate();
+    }
+
+    /// <summary>挂窗口消息钩子，响应第二个实例的“显示主窗口”请求（窗口在托盘/最小化时也能自行恢复）。</summary>
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        if (PresentationSource.FromVisual(this) is HwndSource src)
+            src.AddHook(WndProc);
+    }
+
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == App.ShowMainMessage)
+        {
+            RestoreFromTray();
+            Topmost = true;
+            Topmost = false; // 强制置顶一次，确保抢到前台焦点
+            handled = true;
+        }
+        return IntPtr.Zero;
     }
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
@@ -653,7 +674,7 @@ public partial class MainWindow : Window
     {
         "已解决" => "#E8F5E9",
         "等待客户回复" => "#FFEBEE",
-        "等待客服回复" => "#FFF3E0",
+        "等待客服回复" => "#FFEBEE",
         "等待研发回复" => "#E3F2FD",
         "纳入开发计划" => "#F3E5F5",
         "合并或拆分为其他工单" => "#F0FDFA",
@@ -1141,6 +1162,20 @@ public partial class MainWindow : Window
         if (sender is not MenuItem mi || mi.Tag is not EmailNodeViewModel ev) return;
         _vm.MarkThreadSeen(ev.Email.ThreadId);
         _vm.StatusText = "已将该线索全部邮件标记为已读";
+    }
+
+    /// <summary>右键“复制工单号”：把当前线索的工单号复制到剪贴板。</summary>
+    private void CopyTicketNumber_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem mi || mi.Tag is not EmailNodeViewModel ev) return;
+        var ticket = ev.ThreadOwner.TicketNumber;
+        if (string.IsNullOrWhiteSpace(ticket))
+        {
+            _vm.StatusText = "该线索没有工单号";
+            return;
+        }
+        Clipboard.SetText(ticket);
+        _vm.StatusText = $"已复制工单号：{ticket}";
     }
 
     private void Exit_Click(object sender, RoutedEventArgs e) => Close();

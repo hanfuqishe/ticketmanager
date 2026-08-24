@@ -35,7 +35,7 @@ public class ThreadViewModel
     {
         "已解决" => Brushes.ForestGreen,
         "等待客户回复" => Brushes.OrangeRed,
-        "等待客服回复" => Brushes.DarkOrange,
+        "等待客服回复" => Brushes.DarkRed,
         "等待研发回复" => Brushes.DodgerBlue,
         "纳入开发计划" => Brushes.MediumPurple,
         "合并或拆分为其他工单" => Brushes.Teal,
@@ -53,7 +53,7 @@ public class ThreadViewModel
     {
         "已解决" => (FromHex("#2E7D32"), FromHex("#E8F5E9")),
         "等待客户回复" => (FromHex("#D32F2F"), FromHex("#FFEBEE")),
-        "等待客服回复" => (FromHex("#EF6C00"), FromHex("#FFF3E0")),
+        "等待客服回复" => (FromHex("#B71C1C"), FromHex("#FFEBEE")),
         "等待研发回复" => (FromHex("#1976D2"), FromHex("#E3F2FD")),
         "纳入开发计划" => (FromHex("#8E24AA"), FromHex("#F3E5F5")),
         "合并或拆分为其他工单" => (FromHex("#0F766E"), FromHex("#F0FDFA")),

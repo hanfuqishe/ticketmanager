@@ -16,9 +16,10 @@
 1. 在刚创建的 Self Client 页面里点击 **Generate Token**
 2. 选择以下 Scope（逗号分隔，直接粘贴）：
    ```
-   ZohoMail.accounts.READ,ZohoMail.folders.READ,ZohoMail.messages.READ
+   ZohoMail.accounts.READ,ZohoMail.folders.READ,ZohoMail.messages.READ,ZohoMail.messages.CREATE
    ```
    > 注意：Zoho 没有 `ZohoMail.threads.READ` 这个 scope。线程信息（threadId）由 `ZohoMail.messages.READ` 自动返回，无需单独申请。
+   > `ZohoMail.messages.CREATE` 是「提新工单」发信所需的权限；若已在旧客户端生成过 Token，需在客户端补充该 scope 后重新生成 Refresh Token。
 3. 生成后，页面会给出 **Refresh Token**（长期有效）和 **Access Token**（短期）
 4. **复制 Refresh Token** 保存（这是关键，程序靠它自动续期 Access Token）
 
@@ -44,6 +45,7 @@
 | 获取文件夹列表（INBOX/已发送） | `GET {api}/accounts/{accountId}/folders` |
 | 列出某文件夹的邮件 | `GET {api}/accounts/{accountId}/messages/view?folderId=&start=&limit=&includeto=true` |
 | 取单封邮件正文/头 | `GET {api}/accounts/{accountId}/folders/{folderId}/messages/{messageId}/content?includeBlockContent=true` |
+| 发送邮件（提交工单） | `POST {api}/accounts/{accountId}/messages`（body: `fromAddress,toAddress,ccAddress,subject,content,mailFormat`） |
 
 认证头：`Authorization: Zoho-oauthtoken <access_token>`（注意不是 Bearer）。
 

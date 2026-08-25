@@ -117,8 +117,8 @@ public class DatabaseService : IDisposable
             // 老库历史邮件一律视为“已尝试过 AI 元数据分析”：避免历史积压的缺字段邮件
             // （多为 AI 分析不出的厂商客服邮件）在之后每次同步都被重新交给 AI
             conn.Execute("UPDATE Emails SET MetaAnalyzed = 1 WHERE MetaAnalyzed = 0");
-        }
-        var threadCols = new HashSet<string>(conn.Query<string>(
+        }        if (!emailCols.Contains("Starred"))
+            conn.Execute("ALTER TABLE Emails ADD COLUMN Starred INTEGER NOT NULL DEFAULT 0");        var threadCols = new HashSet<string>(conn.Query<string>(
             "SELECT name FROM pragma_table_info('Threads')"));
         if (!threadCols.Contains("StatusReason"))
             conn.Execute("ALTER TABLE Threads ADD COLUMN StatusReason TEXT NOT NULL DEFAULT ''");
@@ -264,7 +264,7 @@ public class DatabaseService : IDisposable
         var rows = conn.Query("""
             SELECT Id, Folder, Uid, MessageId, InReplyTo, "References", ZohoMessageId, ZohoThreadId,
                    FromAddress, FromName, ToAddresses, CcAddresses, Subject, AiTitle,
-                   DateSent, DateReceived, ThreadId, TicketNumber, Product, Enterprise, FaultDescription, IsNew
+                   DateSent, DateReceived, ThreadId, TicketNumber, Product, Enterprise, FaultDescription, IsNew, Starred
             FROM Emails
             """).ToList();
         return rows.Select(MapEmailLight).ToList();
@@ -278,7 +278,7 @@ public class DatabaseService : IDisposable
         var rows = conn.Query("""
             SELECT Id, Folder, Uid, MessageId, InReplyTo, "References", ZohoMessageId, ZohoThreadId,
                    FromAddress, FromName, ToAddresses, CcAddresses, Subject, AiTitle,
-                   DateSent, DateReceived, ThreadId, TicketNumber, Product, Enterprise, FaultDescription, IsNew
+                   DateSent, DateReceived, ThreadId, TicketNumber, Product, Enterprise, FaultDescription, IsNew, Starred
             FROM Emails
             WHERE (Product = '' OR Enterprise = '') AND MetaAnalyzed = 0
             """).ToList();
@@ -619,6 +619,22 @@ public class DatabaseService : IDisposable
         conn.Execute("UPDATE Emails SET IsNew = 0 WHERE Id = @id", new { id });
     }
 
+    /// <summary>设置/清除某封邮件的星标。</summary>
+    public void SetEmailStarred(long id, bool starred)
+    {
+        using var conn = Open();
+        conn.Execute("UPDATE Emails SET Starred = @s WHERE Id = @id", new { s = starred ? 1 : 0, id });
+    }
+
+    /// <summary>含星标邮件的线索 Id 集合（供“仅星标”过滤）。</summary>
+    public HashSet<long> GetStarredThreadIds()
+    {
+        using var conn = Open();
+        var rows = conn.Query<long>(
+            "SELECT DISTINCT ThreadId FROM Emails WHERE Starred = 1 AND ThreadId > 0").ToList();
+        return rows.ToHashSet();
+    }
+
     /// <summary>按邮件 Id 列表批量清除“新同步”标记（客户/产品右键“全部已读”）。</summary>
     public void MarkEmailsSeen(IEnumerable<long> ids)
     {
@@ -682,7 +698,8 @@ public class DatabaseService : IDisposable
         Product = (string)r.Product,
         Enterprise = (string)r.Enterprise,
         FaultDescription = (string)r.FaultDescription,
-        IsNew = (long)r.IsNew != 0
+        IsNew = (long)r.IsNew != 0,
+        Starred = (long)r.Starred != 0
     };
 
     private static EmailMessage MapEmail(dynamic r) => new()
@@ -710,7 +727,8 @@ public class DatabaseService : IDisposable
         Product = (string)r.Product,
         Enterprise = (string)r.Enterprise,
         FaultDescription = (string)r.FaultDescription,
-        IsNew = (long)r.IsNew != 0
+        IsNew = (long)r.IsNew != 0,
+        Starred = (long)r.Starred != 0
     };
 
     private static DateTimeOffset ParseDate(string s)

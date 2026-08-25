@@ -1,0 +1,24 @@
+<Window x:Class="TicketManager.Views.FontSettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="邮件字体设置" Width="420" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner" FontFamily="Microsoft YaHei UI" FontSize="13" ResizeMode="NoResize">
+    <StackPanel Margin="16">
+        <TextBlock Text="此字体统一应用于 邮件正文 与 签名" Foreground="Gray" FontSize="11" TextWrapping="Wrap"/>
+        <TextBlock Text="字体：" Margin="0,12,0,0"/>
+        <ComboBox x:Name="FontBox" Margin="0,4,0,0" Padding="2"/>
+        <TextBlock Text="字号(pt)：" Margin="0,12,0,0"/>
+        <ComboBox x:Name="SizeBox" Margin="0,4,0,0" Padding="2"/>
+        <TextBlock Text="颜色（十六进制）：" Margin="0,12,0,0"/>
+        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+            <TextBox x:Name="ColorBox" Width="150" Padding="4" TextChanged="ColorBox_TextChanged"/>
+            <Border x:Name="ColorPreview" Width="26" Height="26" BorderBrush="#999" BorderThickness="1"
+                    CornerRadius="3" Margin="8,0,0,0" VerticalAlignment="Center"/>
+        </StackPanel>
+        <TextBlock Text="颜色如 #333333 或 #D32F2F；留空则用默认深灰" Foreground="Gray" FontSize="11" Margin="0,4,0,0"/>
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+            <Button Content="保存" Width="80" Padding="6,3" Click="Save_Click" IsDefault="True"/>
+            <Button Content="取消" Width="80" Padding="6,3" Margin="10,0,0,0" IsCancel="True"/>
+        </StackPanel>
+    </StackPanel>
+</Window>

@@ -89,6 +89,15 @@ public class EmailNodeViewModel : ViewModelBase
     /// <summary>本邮件是否为最近同步新增（用于高亮与跳转）。</summary>
     public bool IsNew => Email.IsNew;
 
+    /// <summary>本邮件是否已标星：根邮件（线索行）反映线索内是否有星标邮件，其余邮件反映自身星标。</summary>
+    public bool IsStarred => IsRoot ? ThreadOwner.Thread.Emails.Any(e => e.Starred) : Email.Starred;
+
+    /// <summary>星标状态变化后刷新图标（点击切换后调用）。</summary>
+    public void RefreshStarState()
+    {
+        OnPropertyChanged(nameof(IsStarred));
+    }
+
     /// <summary>根邮件且线索内含新同步邮件（用于根线索高亮）。</summary>
     public bool IsNewRoot => IsRoot && ThreadOwner.HasNewMail;
 

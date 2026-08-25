@@ -1,0 +1,112 @@
+<Window x:Class="TicketManager.Views.SubmitTicketWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="clr-namespace:TicketManager.Views"
+        Title="提新工单" Height="690" Width="640"
+        WindowStartupLocation="CenterOwner" FontFamily="Microsoft YaHei UI" FontSize="13"
+        ResizeMode="CanResize">
+    <Window.Resources>
+        <views:AttachmentDisplayConverter x:Key="AttachDisp"/>
+    </Window.Resources>
+    <DockPanel Margin="14">
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,12,0,0">
+            <TextBlock Text="{Binding StatusText}" VerticalAlignment="Center" Foreground="#C62828"
+                       TextWrapping="Wrap" MaxWidth="400" FontSize="12"/>
+            <Button Content="发送" Width="90" Padding="8,4" Command="{Binding SendCommand}" IsDefault="True"
+                    HorizontalAlignment="Right"/>
+            <Button Content="取消" Width="90" Padding="8,4" Margin="10,0,0,0" IsCancel="True"/>
+        </StackPanel>
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="收信人（客服）：" VerticalAlignment="Center"/>
+            <ComboBox Grid.Row="0" Grid.Column="1" ItemsSource="{Binding SupportRecipients}" IsEditable="True"
+                      Text="{Binding SelectedRecipient, UpdateSourceTrigger=PropertyChanged}" Margin="8,4" Padding="2"
+                      HorizontalContentAlignment="Right" ToolTip="选择或输入客服邮箱"/>
+
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="产品：" VerticalAlignment="Center"/>
+            <ComboBox Grid.Row="1" Grid.Column="1" ItemsSource="{Binding Products}" IsEditable="True"
+                      Text="{Binding SelectedProduct, UpdateSourceTrigger=PropertyChanged}" Margin="8,4" Padding="2"
+                      ToolTip="选择或输入产品名称"/>
+
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="客户：" VerticalAlignment="Center"/>
+            <ComboBox x:Name="CustomerBox" Grid.Row="2" Grid.Column="1" IsEditable="True"
+                      ItemsSource="{Binding Customers}" Text="{Binding Customer, UpdateSourceTrigger=PropertyChanged}"
+                      LostFocus="CustomerBox_LostFocus" SelectionChanged="CustomerBox_SelectionChanged" Margin="8,4" Padding="2"
+                      ToolTip="从已有客户中选择，或直接输入新客户名称"/>
+
+            <TextBlock Grid.Row="3" Grid.Column="0" Text="客户接口人：" VerticalAlignment="Center"/>
+            <ComboBox Grid.Row="3" Grid.Column="1" IsEditable="True" ItemsSource="{Binding Contacts}"
+                      Text="{Binding SelectedContact, UpdateSourceTrigger=PropertyChanged}" Margin="8,4" Padding="2"
+                      HorizontalContentAlignment="Right"
+                      ToolTip="该客户相关邮件中出现过的客户方邮箱（可输入自定义）；留空则不抄送"/>
+
+            <TextBlock Grid.Row="4" Grid.Column="0" Text="抄送：" VerticalAlignment="Center"/>
+            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding CcEmails}" Margin="8,4" Padding="4"
+                     ToolTip="多个邮箱用逗号或分号分隔（可含 姓名&lt;邮箱&gt;）；与客户接口人一起作为抄送"/>
+
+            <TextBlock Grid.Row="5" Grid.Column="0" Text="故障现象：" VerticalAlignment="Center"/>
+            <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding Fault, UpdateSourceTrigger=PropertyChanged}"
+                     Margin="8,4" Padding="4" ToolTip="作为邮件标题的一部分"/>
+
+            <TextBlock Grid.Row="6" Grid.Column="0" Text="邮件标题：" VerticalAlignment="Center"/>
+            <TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding SubjectPreview}" Foreground="#1f3a5f"
+                       FontWeight="SemiBold" TextWrapping="Wrap" Margin="8,4" VerticalAlignment="Center"/>
+
+            <TextBlock Grid.Row="7" Grid.Column="0" Text="详情：" VerticalAlignment="Top" Margin="0,6,0,0"/>
+            <TextBox Grid.Row="7" Grid.Column="1" Text="{Binding Body}" AcceptsReturn="True" TextWrapping="Wrap"
+                     VerticalScrollBarVisibility="Auto" Margin="8,4" Padding="4" MinHeight="90"
+                     FontFamily="{Binding EmailFontFamily}" FontSize="{Binding EmailFontSize}"
+                     ToolTip="邮件正文，可填写故障详细描述"/>
+
+            <TextBlock Grid.Row="8" Grid.Column="0" Text="附件：" VerticalAlignment="Top" Margin="0,6,0,0"/>
+            <DockPanel Grid.Row="8" Grid.Column="1" Margin="8,4">
+                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal">
+                    <Button Content="添加附件…" Click="AddAttachment_Click" Padding="12,4"/>
+                    <Button Content="移除选中" Click="RemoveAttachment_Click" Padding="12,4" Margin="8,0,0,0"/>
+                    <TextBlock Text="{Binding AttachmentSummary}" VerticalAlignment="Center" Foreground="Gray"
+                               FontSize="11" Margin="12,0,0,0"/>
+                </StackPanel>
+                <ListBox x:Name="AttachmentList" ItemsSource="{Binding Attachments}" Height="56" Margin="0,6,0,0"
+                         BorderBrush="#ccc">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Converter={StaticResource AttachDisp}}" FontSize="11"
+                                       TextTrimming="CharacterEllipsis" ToolTip="{Binding}"/>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </DockPanel>
+
+            <TextBlock Grid.Row="9" Grid.Column="0" Text="签名：" VerticalAlignment="Top" Margin="0,6,0,0"/>
+            <StackPanel Grid.Row="9" Grid.Column="1" Margin="8,4">
+                <ComboBox ItemsSource="{Binding SignatureNames}" SelectedItem="{Binding SelectedSignature}" Padding="2"
+                          ToolTip="在“设置→签名”中维护；发送时以 HTML 追加到正文末尾（留空则不追加）"/>
+                <!-- 只读签名预览：随签名选择实时显示其内容（字体统一用全局邮件字体设置） -->
+                <Border Background="#F5F5F5" BorderBrush="#DDD" BorderThickness="1" CornerRadius="3"
+                        Padding="8" Margin="0,6,0,0">
+                    <TextBlock Text="{Binding SelectedSignatureObject.Text}" TextWrapping="Wrap"
+                               FontFamily="{Binding EmailFontFamily}"
+                               FontSize="{Binding EmailFontSize}"
+                               Foreground="{Binding EmailFontBrush}"/>
+                </Border>
+            </StackPanel>
+        </Grid>
+    </DockPanel>
+</Window>

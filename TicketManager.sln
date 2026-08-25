@@ -31,6 +31,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ExpMigrateProbe", "tools\Ex
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TimeProbe", "tools\TimeProbe\TimeProbe.csproj", "{DCCA1DF1-E302-4438-A8FD-BBAEF8CB0E83}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FilterProbe", "tools\FilterProbe\FilterProbe.csproj", "{1C8F296D-7538-461B-877F-91960E48D104}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -85,6 +87,10 @@ Global
 		{DCCA1DF1-E302-4438-A8FD-BBAEF8CB0E83}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{DCCA1DF1-E302-4438-A8FD-BBAEF8CB0E83}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{DCCA1DF1-E302-4438-A8FD-BBAEF8CB0E83}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1C8F296D-7538-461B-877F-91960E48D104}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1C8F296D-7538-461B-877F-91960E48D104}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1C8F296D-7538-461B-877F-91960E48D104}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1C8F296D-7538-461B-877F-91960E48D104}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -102,5 +108,6 @@ Global
 		{F23098F7-340A-4F09-B878-5C1EEA68608E} = {E1AC983B-C3BB-49B3-B78C-AD48C53D73BF}
 		{4105A4DC-AD84-4541-A7FF-80FC2A018955} = {E1AC983B-C3BB-49B3-B78C-AD48C53D73BF}
 		{DCCA1DF1-E302-4438-A8FD-BBAEF8CB0E83} = {E1AC983B-C3BB-49B3-B78C-AD48C53D73BF}
+		{1C8F296D-7538-461B-877F-91960E48D104} = {E1AC983B-C3BB-49B3-B78C-AD48C53D73BF}
 	EndGlobalSection
 EndGlobal

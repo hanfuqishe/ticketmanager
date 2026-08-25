@@ -7,9 +7,11 @@
         WindowStartupLocation="CenterScreen" FontFamily="Microsoft YaHei UI" FontSize="13">
     <Window.InputBindings>
         <KeyBinding Key="S" Modifiers="Control" Command="{Binding SyncCommand}"/>
+        <KeyBinding Key="N" Modifiers="Control" Command="{Binding SubmitTicketCommand}"/>
         <KeyBinding Key="OemComma" Modifiers="Control" Command="{Binding OpenSettingsCommand}"/>
         <KeyBinding Key="Delete" Modifiers="Control+Shift" Command="{Binding ClearDataCommand}"/>
         <KeyBinding Key="J" Modifiers="Control" Command="{Binding JumpToNewMailCommand}"/>
+        <KeyBinding Key="F9" Command="{Binding RegenerateAiSummaryCommand}"/>
     </Window.InputBindings>
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
@@ -19,6 +21,8 @@
         <StreamGeometry x:Key="IconDelete">M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z</StreamGeometry>
         <StreamGeometry x:Key="IconLogout">M16,17V14H9V10H16V7L21,12L16,17M14,2A2,2 0 0,0 12,4V2H4A2,2 0 0,0 2,4V20A2,2 0 0,0 4,22H12V20H4V4H12V2Z</StreamGeometry>
         <StreamGeometry x:Key="IconCog">M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.66 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11.03L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.21,8.95 2.27,9.22 2.46,9.37L4.57,11.03C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.66 4.57,12.97L2.46,14.63C2.27,14.78 2.21,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.67 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z</StreamGeometry>
+        <!-- 调色板：邮件字体设置 -->
+        <StreamGeometry x:Key="IconPalette">M12,22A10,10 0 0,1 2,12A10,10 0 0,1 12,2C17.5,2 22,6 22,11C22,14.3 19.3,17 16,17H14.2C13.5,17 13,17.5 13,18.2C13,18.5 13.1,18.7 13.3,18.9C13.6,19.2 13.7,19.5 13.7,19.9C13.7,20.6 13.2,21 12.7,21.4C12.5,21.6 12.3,21.7 12,22M7,12A1.5,1.5 0 0,0 8.5,10.5A1.5,1.5 0 0,0 7,9A1.5,1.5 0 0,0 5.5,10.5A1.5,1.5 0 0,0 7,12M10,8A1.5,1.5 0 0,0 11.5,6.5A1.5,1.5 0 0,0 10,5A1.5,1.5 0 0,0 8.5,6.5A1.5,1.5 0 0,0 10,8M15,8A1.5,1.5 0 0,0 16.5,6.5A1.5,1.5 0 0,0 15,5A1.5,1.5 0 0,0 13.5,6.5A1.5,1.5 0 0,0 15,8M18,11A1.5,1.5 0 0,0 19.5,9.5A1.5,1.5 0 0,0 18,8A1.5,1.5 0 0,0 16.5,9.5A1.5,1.5 0 0,0 18,11Z</StreamGeometry>
         <StreamGeometry x:Key="IconEmail">M20,4H4C2.9,4 2,4.9 2,6V18C2,19.1 2.9,20 4,20H20C21.1,20 22,19.1 22,18V6C22,4.9 21.1,4 20,4M20,8L12,13L4,8V6L12,11L20,6V8Z</StreamGeometry>
         <StreamGeometry x:Key="IconInfo">M13,9H11V7H13M13,17H11V11H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z</StreamGeometry>
         <StreamGeometry x:Key="IconPaperclip">M16.5,6V17.5A4,4 0 0,1 12.5,21.5A4,4 0 0,1 8.5,17.5V5A2.5,2.5 0 0,1 11,2.5A2.5,2.5 0 0,1 13.5,5V15.5A1,1 0 0,1 12.5,16.5A1,1 0 0,1 11.5,15.5V6H10V15.5A2.5,2.5 0 0,0 12.5,18A2.5,2.5 0 0,0 15,15.5V5A4,4 0 0,0 11,1A4,4 0 0,0 7,5V17.5A5.5,5.5 0 0,0 12.5,23A5.5,5.5 0 0,0 18,17.5V6H16.5Z</StreamGeometry>
@@ -29,6 +33,69 @@
         <StreamGeometry x:Key="IconSearch">M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.44,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.44C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5Z</StreamGeometry>
         <StreamGeometry x:Key="IconCheck">M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z</StreamGeometry>
         <StreamGeometry x:Key="IconCopy">M19,21H8V7H19M19,5H8A2,2 0 0,0 6,7V21A2,2 0 0,0 8,23H19A2,2 0 0,0 21,21V7A2,2 0 0,0 19,5M16,1H4A2,2 0 0,0 2,3V17H4V3H16V1Z</StreamGeometry>
+        <StreamGeometry x:Key="IconSend">M2,21L23,12L2,3V10L17,12L2,14V21Z</StreamGeometry>
+        <!-- 文档+加号：提新工单（新建文档） -->
+        <StreamGeometry x:Key="IconDocNew">M14,2H6C4.9,2 4,2.9 4,4V20C4,21.1 4.9,22 6,22H18C19.1,22 20,21.1 20,20V8L14,2M13,9V3.5L18.5,9H13M13,16H11V18H9V16H7V14H9V12H11V14H13V16Z</StreamGeometry>
+        <StreamGeometry x:Key="IconStar">M12,17.27L18.18,21L16.54,13.97L22,9.24L14.81,8.62L12,2L9.19,8.62L2,9.24L7.45,13.97L5.82,21L12,17.27Z</StreamGeometry>
+
+        <!-- 按键栏按钮：默认淡/透明背景，悬停淡灰、按下略深，选中（勾选）时浅蓝+蓝边才醒目 -->
+        <Style x:Key="ToolbarButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Foreground" Value="#333333"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3" SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#E9EEF5"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#CBD6E2"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#DCE4EE"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 按键栏开关（仅新邮件/仅星标）：默认淡，勾选时浅蓝底+蓝边框突出 -->
+        <Style x:Key="ToolbarToggleButtonStyle" TargetType="ToggleButton">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Foreground" Value="#333333"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3" SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#E9EEF5"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#CBD6E2"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#D6E6FB"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#2B7DE9"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
 
         <!-- 展开/折叠箭头（三角形，展开时旋转 90° 指向下） -->
         <Style x:Key="TreeExpanderStyle" TargetType="ToggleButton">
@@ -247,6 +314,11 @@
                                 <Path Data="{StaticResource IconCopy}" Fill="#455A64" Width="15" Height="15" Stretch="Uniform"/>
                             </MenuItem.Icon>
                         </MenuItem>
+                        <MenuItem x:Name="StarMenuItem" Header="星标" Tag="{Binding}" Click="ToggleStarMenu_Click">
+                            <MenuItem.Icon>
+                                <Path Data="{StaticResource IconStar}" Fill="#F5A623" Width="15" Height="15" Stretch="Uniform"/>
+                            </MenuItem.Icon>
+                        </MenuItem>
                         <Separator/>
                         <MenuItem Header="设置状态">
                             <MenuItem Header="已解决" Tag="{Binding}" Click="SetStatus_Click"/>
@@ -258,7 +330,7 @@
                             <MenuItem Header="合并或拆分为其他工单" Tag="{Binding}" Click="SetStatus_Click"/>
                             <MenuItem Header="新建" Tag="{Binding}" Click="SetStatus_Click"/>
                             <Separator/>
-                            <MenuItem Header="恢复 AI 总结" Tag="{Binding}" Click="RegenerateStatus_Click"/>
+                            <MenuItem Header="AI 总结" Tag="{Binding}" Click="RegenerateStatus_Click" InputGestureText="F9"/>
                         </MenuItem>
                         <MenuItem Header="全部已读" Tag="{Binding}" Click="MarkThreadSeen_Click">
                             <MenuItem.Icon>
@@ -273,24 +345,41 @@
                     </ContextMenu>
                 </Grid.ContextMenu>
                 <StackPanel>
-                    <!-- 行1：状态徽章（仅根邮件）+ 标题，AI 总结内联跟在主标题后 -->
-                    <StackPanel Orientation="Horizontal">
-                        <Border Background="{Binding StatusBrush}" CornerRadius="3" Padding="4,1" VerticalAlignment="Center"
-                                Visibility="{Binding IsRoot, Converter={StaticResource BoolToVis}}">
-                            <TextBlock Text="{Binding Status}" Foreground="White" FontSize="11"/>
-                        </Border>
-                        <Border Background="#E67E22" CornerRadius="3" Padding="4,1" VerticalAlignment="Center" Margin="4,0,0,0"
-                                Visibility="{Binding NewBadgeVisibility}">
-                            <TextBlock Text="NEW" Foreground="White" FontSize="10" FontWeight="Bold"/>
-                        </Border>
-                        <TextBlock TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Margin="4,0,0,0"
-                                   FontWeight="{Binding TitleWeight}">
-                            <Run Text="{Binding Badge, Mode=OneWay}" Foreground="#2b7de9" FontWeight="Bold"/>
-                            <Run Text="{Binding Title, Mode=OneWay}" Foreground="#202020"/>
-                            <Run Text="{Binding SummaryPrefix, Mode=OneWay}" Foreground="{Binding SummaryBrush}" FontWeight="SemiBold"/>
-                            <Run Text="{Binding Summary, Mode=OneWay}" Foreground="{Binding SummaryBrush}"/>
-                        </TextBlock>
-                    </StackPanel>
+                    <!-- 行1：状态徽章 + 标题（占满剩余）+ 星标固定在行右边缘，各行星标纵向对齐成竖线 -->
+                    <DockPanel>
+                        <Button DockPanel.Dock="Right" Background="Transparent" BorderThickness="0" Padding="3,0"
+                                VerticalAlignment="Center" Click="ToggleStar_Click" ToolTip="标星/取消星标">
+                            <Path Data="{StaticResource IconStar}" Width="13" Height="13" Stretch="Uniform">
+                                <Path.Style>
+                                    <Style TargetType="Path">
+                                        <Setter Property="Fill" Value="#C9C9C9"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsStarred}" Value="True">
+                                                <Setter Property="Fill" Value="#F5A623"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Path.Style>
+                            </Path>
+                        </Button>
+                        <StackPanel Orientation="Horizontal">
+                            <Border Background="{Binding StatusBrush}" CornerRadius="3" Padding="4,1" VerticalAlignment="Center"
+                                    Visibility="{Binding IsRoot, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="{Binding Status}" Foreground="White" FontSize="11"/>
+                            </Border>
+                            <Border Background="#E67E22" CornerRadius="3" Padding="4,1" VerticalAlignment="Center" Margin="4,0,0,0"
+                                    Visibility="{Binding NewBadgeVisibility}">
+                                <TextBlock Text="NEW" Foreground="White" FontSize="10" FontWeight="Bold"/>
+                            </Border>
+                            <TextBlock TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" Margin="4,0,0,0"
+                                       FontWeight="{Binding TitleWeight}">
+                                <Run Text="{Binding Badge, Mode=OneWay}" Foreground="#2b7de9" FontWeight="Bold"/>
+                                <Run Text="{Binding Title, Mode=OneWay}" Foreground="#202020"/>
+                                <Run Text="{Binding SummaryPrefix, Mode=OneWay}" Foreground="{Binding SummaryBrush}" FontWeight="SemiBold"/>
+                                <Run Text="{Binding Summary, Mode=OneWay}" Foreground="{Binding SummaryBrush}"/>
+                            </TextBlock>
+                        </StackPanel>
+                    </DockPanel>
                     <!-- 行2：工单号（仅根邮件） 发件人 · 时间 -->
                     <StackPanel Orientation="Horizontal" Margin="0,1,0,0">
                         <TextBlock Text="{Binding TicketPrefix, Mode=OneWay}" FontSize="11" Foreground="#1f3a5f" FontWeight="SemiBold"
@@ -309,7 +398,13 @@
     <DockPanel>
         <!-- 主菜单 -->
         <Menu DockPanel.Dock="Top">
-            <MenuItem Header="文件(_F)">
+            <MenuItem Header="工单(_G)">
+                <MenuItem Header="提新工单(_N)" Command="{Binding SubmitTicketCommand}" InputGestureText="Ctrl+N">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconDocNew}" Fill="#43A047" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
+                </MenuItem>
+                <Separator/>
                 <MenuItem Header="同步邮件(_S)" Command="{Binding SyncCommand}" InputGestureText="Ctrl+S">
                     <MenuItem.Icon>
                         <Path Data="{StaticResource IconSync}" Fill="#2B7DE9" Width="15" Height="15" Stretch="Uniform"/>
@@ -352,6 +447,16 @@
                         <Path Data="{StaticResource IconCog}" Fill="#5B9BD5" Width="15" Height="15" Stretch="Uniform"/>
                     </MenuItem.Icon>
                 </MenuItem>
+                <MenuItem Header="签名…(_G)" Command="{Binding SignaturesCommand}">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconDoc}" Fill="#5B9BD5" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="字体…(_F)" Command="{Binding FontSettingsCommand}">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconPalette}" Fill="#5B9BD5" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
+                </MenuItem>
             </MenuItem>
             <MenuItem Header="导航(_N)">
                 <MenuItem Header="跳转新邮件(_J)" Command="{Binding JumpToNewMailCommand}" InputGestureText="Ctrl+J">
@@ -364,6 +469,28 @@
                 <MenuItem Header="智能整理（折叠已结束、展开进行中）" Click="SmartCollapse_Click">
                     <MenuItem.Icon>
                         <Path Data="{StaticResource IconCheck}" Fill="#43A047" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
+                </MenuItem>
+                <Separator/>
+                <!-- 过滤：仅新邮件 / 仅星标 / 清除检索 -->
+                <MenuItem Header="仅显示新邮件" IsCheckable="True" IsChecked="{Binding NewMailOnly}">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconEmail}" Fill="#43A047" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="仅显示星标" IsCheckable="True" IsChecked="{Binding StarredOnly}">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconStar}" Fill="#F5A623" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="清除检索" Click="ClearSearch_Click">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconSearch}" Fill="#757575" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
+                </MenuItem>
+                <MenuItem Header="检索…" Click="FocusSearch_Click" InputGestureText="Ctrl+F">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconSearch}" Fill="#2B7DE9" Width="15" Height="15" Stretch="Uniform"/>
                     </MenuItem.Icon>
                 </MenuItem>
                 <Separator/>
@@ -381,6 +508,66 @@
                 </MenuItem>
             </MenuItem>
         </Menu>
+
+        <!-- 按键栏：通栏横跨整个窗口，所有快捷按钮在一行内全部显示 -->
+        <Border DockPanel.Dock="Top" Padding="8,6" Background="#fafafa" BorderBrush="#e0e0e0" BorderThickness="0,0,0,1">
+            <StackPanel Orientation="Horizontal">
+                <Button Command="{Binding SubmitTicketCommand}" Style="{StaticResource ToolbarButtonStyle}"
+                        MinWidth="88" Padding="10,3"
+                        FontSize="11" Margin="0,0,8,0" VerticalAlignment="Center"
+                        ToolTip="提新工单（Ctrl+N）">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Data="{StaticResource IconDocNew}" Fill="#43A047" Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center"/>
+                        <TextBlock Text=" 提新工单" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <Path Data="{StaticResource IconSearch}" Fill="#757575" Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center"/>
+                <TextBox x:Name="SearchBox" Width="190" Margin="6,0,0,0" Padding="4" VerticalAlignment="Center"
+                         Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="按工单号或邮件主题检索，留空显示全部"/>
+                <Button Content="✕" Width="24" Padding="0" Margin="4,0,0,0"
+                        VerticalAlignment="Center" ToolTip="清除检索" Click="ClearSearch_Click"
+                        Style="{StaticResource ToolbarButtonStyle}"/>
+                <Border Width="1" Background="#C8C8C8" Margin="8,3,0,3"/>
+                <ToggleButton IsChecked="{Binding NewMailOnly}" Style="{StaticResource ToolbarToggleButtonStyle}"
+                              MinWidth="82" Padding="8,3"
+                              FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"
+                              ToolTip="只显示含有新同步邮件的线索">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Data="{StaticResource IconEmail}" Fill="#43A047" Width="14" Height="14" Stretch="Uniform" VerticalAlignment="Center"/>
+                        <TextBlock Text=" 仅新邮件" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </ToggleButton>
+                <ToggleButton IsChecked="{Binding StarredOnly}" Style="{StaticResource ToolbarToggleButtonStyle}"
+                              MinWidth="82" Padding="8,3"
+                              FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"
+                              ToolTip="只显示含有星标邮件的线索">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Data="{StaticResource IconStar}" Fill="#F5A623" Width="14" Height="14" Stretch="Uniform" VerticalAlignment="Center"/>
+                        <TextBlock Text=" 仅星标" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </ToggleButton>
+                <Border Width="1" Background="#C8C8C8" Margin="8,3,0,3"/>
+                <Button Command="{Binding JumpToNewMailCommand}" Style="{StaticResource ToolbarButtonStyle}"
+                        MinWidth="104" Padding="10,3"
+                        FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"
+                        ToolTip="跳到下一条新同步的邮件（Ctrl+J）">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Data="{StaticResource IconEmail}" Fill="#2B7DE9" Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center"/>
+                        <TextBlock Text=" 跳转新邮件" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+                <Button Command="{Binding SyncCommand}" Style="{StaticResource ToolbarButtonStyle}"
+                        MinWidth="72" Padding="10,3"
+                        FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"
+                        ToolTip="同步邮件（Ctrl+S）">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Data="{StaticResource IconSync}" Fill="#1565C0" Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center"/>
+                        <TextBlock Text=" 同步" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Border>
 
         <!-- 底部状态栏 -->
         <StatusBar DockPanel.Dock="Bottom">
@@ -409,33 +596,6 @@
             </Grid.ColumnDefinitions>
 
             <DockPanel Grid.Column="0">
-                <!-- 检索栏：按线索根邮件主题检索 -->
-                <Border DockPanel.Dock="Top" Padding="8,6" Background="#fafafa" BorderBrush="#e0e0e0" BorderThickness="0,0,1,1">
-                    <StackPanel Orientation="Horizontal">
-                        <Path Data="{StaticResource IconSearch}" Fill="#757575" Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center"/>
-                        <TextBox Width="190" Margin="6,0,0,0" Padding="4" VerticalAlignment="Center"
-                                 Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="按工单号或邮件主题检索，留空显示全部"/>
-                        <Button Content="✕" Width="24" Padding="0" Margin="4,0,0,0"
-                                VerticalAlignment="Center" ToolTip="清除检索" Click="ClearSearch_Click"/>
-                        <Button Command="{Binding JumpToNewMailCommand}" MinWidth="104" Padding="10,3"
-                                FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"
-                                ToolTip="跳到下一条新同步的邮件（Ctrl+J）">
-                            <StackPanel Orientation="Horizontal">
-                                <Path Data="{StaticResource IconEmail}" Fill="#2B7DE9" Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center"/>
-                                <TextBlock Text=" 跳转新邮件" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </Button>
-                        <Button Command="{Binding SyncCommand}" MinWidth="72" Padding="10,3"
-                                FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"
-                                ToolTip="同步邮件（Ctrl+S）">
-                            <StackPanel Orientation="Horizontal">
-                                <Path Data="{StaticResource IconSync}" Fill="#1565C0" Width="15" Height="15" Stretch="Uniform" VerticalAlignment="Center"/>
-                                <TextBlock Text=" 同步" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </Button>
-                    </StackPanel>
-                </Border>
                 <TreeView x:Name="TreeView" ItemsSource="{Binding Customers}"
                           ItemContainerStyle="{StaticResource TreeViewItemGuideStyle}"
                           SelectedItemChanged="TreeView_SelectedItemChanged"

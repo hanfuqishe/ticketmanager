@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -14,6 +15,9 @@ public record ZohoFolder(long Id, string Name, string DisplayName);
 public record ZohoMessageSummary(
     long MessageId, long ThreadId, long FolderId, string Subject,
     string FromAddress, string ToAddress, string CcAddress, string SentDate, string ReceivedTime);
+
+/// <summary>上传到 Zoho 文件存储后的附件元数据（发送邮件时在 attachments 数组引用）。</summary>
+public record ZohoAttachmentMeta(string StoreName, string AttachmentName, string AttachmentPath);
 
 /// <summary>
 /// Zoho Mail REST API 客户端（美国数据中心）。IMAP 被封锁后替代 MailKit 拉取邮件。
@@ -211,6 +215,149 @@ public class ZohoMailApiService
         return await resp.Content.ReadAsStringAsync(ct);
     }
 
+    /// <summary>发送一封邮件（Zoho Mail REST API：POST /accounts/{id}/messages）。
+    /// 需要 ZohoMail.messages.CREATE scope。成功返回 (true, null)；失败返回 (false, 错误信息)。
+    /// mailFormat：html（默认，支持签名字体/颜色）或 plain；attachmentPaths 非空时先上传附件再发送。</summary>
+    public async Task<(bool Success, string? Error)> SendEmailAsync(
+        long accountId, string from, string to, string? cc, string subject, string content,
+        string mailFormat = "html", CancellationToken ct = default,
+        IEnumerable<string>? attachmentPaths = null)
+    {
+        var token = await GetAccessTokenAsync(ct);
+        if (string.IsNullOrEmpty(token)) return (false, "无法获取 Zoho Access Token，请检查 Zoho REST API 配置。");
+
+        var attachments = attachmentPaths
+            ?.Where(p => !string.IsNullOrWhiteSpace(p) && File.Exists(p))
+            .ToList();
+        if (attachments is { Count: > 0 })
+        {
+            // 带附件：先上传到 Zoho 文件存储拿元数据，再在发信 JSON 的 attachments 数组引用
+            // （Zoho 发信接口不接受 multipart 直接带文件，必须先 Upload Attachments API）
+            var metas = await UploadAttachmentsAsync(accountId, attachments, ct);
+            if (metas.Count != attachments.Count)
+                return (false, "附件上传失败，请重试。");
+
+            var attPayload = new Dictionary<string, object?>
+            {
+                ["fromAddress"] = from,
+                ["toAddress"] = to,
+                ["subject"] = subject,
+                ["content"] = content,
+                ["mailFormat"] = mailFormat,
+                ["attachments"] = metas.Select(m => new
+                {
+                    storeName = m.StoreName,
+                    attachmentName = m.AttachmentName,
+                    attachmentPath = m.AttachmentPath
+                }).ToList()
+            };
+            if (!string.IsNullOrWhiteSpace(cc)) attPayload["ccAddress"] = cc;
+
+            var req = new HttpRequestMessage(HttpMethod.Post, $"{ApiBase}/accounts/{accountId}/messages")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(attPayload), Encoding.UTF8, "application/json")
+            };
+            req.Headers.Authorization = new AuthenticationHeaderValue("Zoho-oauthtoken", token);
+            return await SendAndParseAsync(req, ct);
+        }
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["fromAddress"] = from,
+            ["toAddress"] = to,
+            ["subject"] = subject,
+            ["content"] = content,
+            ["mailFormat"] = mailFormat
+        };
+        if (!string.IsNullOrWhiteSpace(cc)) payload["ccAddress"] = cc;
+
+        var reqJson = new HttpRequestMessage(HttpMethod.Post, $"{ApiBase}/accounts/{accountId}/messages")
+        {
+            Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+        };
+        reqJson.Headers.Authorization = new AuthenticationHeaderValue("Zoho-oauthtoken", token);
+        return await SendAndParseAsync(reqJson, ct);
+    }
+
+    /// <summary>执行发送请求并解析 Zoho 响应。成功返回 (true, null)；失败返回 (false, 错误信息)。</summary>
+    private async Task<(bool Success, string? Error)> SendAndParseAsync(
+        HttpRequestMessage req, CancellationToken ct)
+    {
+        using var resp = await _http.SendAsync(req, ct);
+        var json = await resp.Content.ReadAsStringAsync(ct);
+        if (resp.IsSuccessStatusCode)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("status", out var st) &&
+                    st.TryGetProperty("code", out var code) && code.GetInt32() == 200)
+                    return (true, null);
+                var desc = st.TryGetProperty("description", out var d) ? d.GetString() : "";
+                return (false, string.IsNullOrEmpty(desc) ? Truncate(json) : desc);
+            }
+            catch { return (false, "发送失败（响应解析错误）：" + Truncate(json)); }
+        }
+        return (false, $"发送失败（HTTP {(int)resp.StatusCode}）：{Truncate(json)}");
+    }
+
+    /// <summary>上传附件到 Zoho 文件存储（POST /accounts/{id}/messages/attachments，multipart，字段名 attach）。
+    /// 返回每个文件的 {storeName, attachmentName, attachmentPath}；失败返回空列表。</summary>
+    public async Task<List<ZohoAttachmentMeta>> UploadAttachmentsAsync(
+        long accountId, IEnumerable<string> paths, CancellationToken ct = default)
+    {
+        var result = new List<ZohoAttachmentMeta>();
+        var token = await GetAccessTokenAsync(ct);
+        if (string.IsNullOrEmpty(token)) return result;
+
+        using var form = new MultipartFormDataContent();
+        var any = false;
+        foreach (var p in paths)
+        {
+            if (!File.Exists(p)) continue;
+            var bytes = await File.ReadAllBytesAsync(p, ct);
+            var part = new ByteArrayContent(bytes);
+            part.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            form.Add(part, "attach", Path.GetFileName(p));
+            any = true;
+        }
+        if (!any) return result;
+
+        var req = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{ApiBase}/accounts/{accountId}/messages/attachments?uploadType=multipart&isInline=false")
+        {
+            Content = form
+        };
+        req.Headers.Authorization = new AuthenticationHeaderValue("Zoho-oauthtoken", token);
+        using var resp = await _http.SendAsync(req, ct);
+        var json = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode) return result;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var data = doc.RootElement.TryGetProperty("data", out var d) ? d : doc.RootElement;
+            if (data.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in data.EnumerateArray()) AddAttachmentMeta(result, item);
+            }
+            else AddAttachmentMeta(result, data);
+        }
+        catch { }
+        return result;
+    }
+
+    private static void AddAttachmentMeta(List<ZohoAttachmentMeta> list, JsonElement item)
+    {
+        var store = item.TryGetProperty("storeName", out var s) ? s.GetString() : "";
+        var name = item.TryGetProperty("attachmentName", out var n) ? n.GetString() : "";
+        var path = item.TryGetProperty("attachmentPath", out var p) ? p.GetString() : "";
+        if (!string.IsNullOrEmpty(store)) list.Add(new ZohoAttachmentMeta(store ?? "", name ?? "", path ?? ""));
+    }
+
+    private static string Truncate(string s, int max = 400)
+        => string.IsNullOrEmpty(s) ? "" : (s.Length > max ? s[..max] : s);
+
     /// <summary>把 列表摘要 + 内容 组装成 EmailMessage（内容获取失败返回 null）。</summary>
     public async Task<EmailMessage?> ToEmailMessageAsync(
         long accountId, long folderId, ZohoMessageSummary m, string folderName, CancellationToken ct = default)
@@ -254,6 +401,21 @@ public class ZohoMailApiService
         if (string.IsNullOrWhiteSpace(s)) return "";
         var first = ExtractAddresses(s);
         return first.Split(';', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
+    }
+
+    /// <summary>从 to/cc 原始地址串（HTML 编码 “Name”&lt;email&gt;）提取所有 (邮箱, 姓名) 对；姓名可为空。</summary>
+    public static IEnumerable<(string Email, string Name)> ExtractContactNames(string s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return Enumerable.Empty<(string, string)>();
+        var decoded = System.Net.WebUtility.HtmlDecode(s);
+        var result = new List<(string, string)>();
+        foreach (Match m in Regex.Matches(decoded, @"(?:\x22([^\x22]*)\x22\s*)?<([^<>]+)>"))
+        {
+            var name = m.Groups[1].Value.Trim();
+            var email = m.Groups[2].Value.Trim();
+            if (email.Length > 0) result.Add((email, name));
+        }
+        return result;
     }
 
     private static DateTimeOffset MsToDateTime(string ms)

@@ -39,6 +39,9 @@ public class EmailMessage
     /// <summary>是否为最近同步新增的邮件（用于高亮与跳转）。</summary>
     public bool IsNew { get; set; }
 
+    /// <summary>是否已标星（星标邮件，支持按星标过滤线索）。</summary>
+    public bool Starred { get; set; }
+
     // ---- 线程归属（由 ThreadBuilder 填充）----
     public long ThreadId { get; set; }
 

@@ -45,6 +45,11 @@ public class AppConfig
     public string ZohoRefreshToken { get; set; } = "";
     public string ZohoAccountId { get; set; } = ""; // 留空自动获取
 
+    // ===== 邮件字体（统一应用于 邮件正文 与 签名） =====
+    public string EmailFontFamily { get; set; } = "Microsoft YaHei UI";
+    public double EmailFontSize { get; set; } = 11;
+    public string EmailFontColor { get; set; } = "#333333";
+
     // ===== 其他 =====
     public int FirstSyncDays { get; set; } = 365;
     public int MaxBodyChars { get; set; } = 6000;

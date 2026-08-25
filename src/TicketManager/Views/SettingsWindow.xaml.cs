@@ -65,7 +65,7 @@ public partial class SettingsWindow : Window
     {
         try
         {
-            Clipboard.SetText("ZohoMail.accounts.READ,ZohoMail.folders.READ,ZohoMail.messages.READ");
+            Clipboard.SetText("ZohoMail.accounts.READ,ZohoMail.folders.READ,ZohoMail.messages.READ,ZohoMail.messages.CREATE");
             MessageBox.Show(this, "Scope 已复制到剪贴板，可直接粘贴到 Zoho 的 Generate Token 页面。", "复制成功",
                 MessageBoxButton.OK, MessageBoxImage.Information);
         }

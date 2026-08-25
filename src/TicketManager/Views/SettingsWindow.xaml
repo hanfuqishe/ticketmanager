@@ -310,13 +310,13 @@
 
                                 <TextBlock Text="② 生成 Refresh Token（长期有效）" FontWeight="Bold" Margin="0,12,0,0"/>
                                 <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,4,0,0">
-                                    <Run Text="在客户端页面点击 Generate Token，把下面这行 Scope 粘贴进去（逗号分隔）→ 生成 → 复制 "/><Run Text="Refresh Token"/><Run Text="（线程信息由 messages.READ 自动返回，无需单独申请）："/>
+                                    <Run Text="在客户端页面点击 Generate Token，把下面这行 Scope 粘贴进去（逗号分隔）→ 生成 → 复制 "/><Run Text="Refresh Token"/><Run Text="（线程信息由 messages.READ 自动返回，无需单独申请；提新工单发信需要 messages.CREATE）："/>
                                 </TextBlock>
                                 <DockPanel Margin="0,6,0,0">
                                     <Button DockPanel.Dock="Right" Content="复制" Padding="14,4" Margin="8,0,0,0"
                                             VerticalAlignment="Center" Click="CopyScope_Click"
                                             ToolTip="把 Scope 复制到剪贴板"/>
-                                    <TextBox Text="ZohoMail.accounts.READ,ZohoMail.folders.READ,ZohoMail.messages.READ"
+                                    <TextBox Text="ZohoMail.accounts.READ,ZohoMail.folders.READ,ZohoMail.messages.READ,ZohoMail.messages.CREATE"
                                              IsReadOnly="True" FontFamily="Consolas" Foreground="#1f3a5f"
                                              TextWrapping="Wrap" Padding="6"
                                              Background="#eef2f7" BorderBrush="#c8d4e0"

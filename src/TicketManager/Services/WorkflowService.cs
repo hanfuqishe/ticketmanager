@@ -56,6 +56,10 @@ public class WorkflowService
             ZohoRefreshToken = CredentialService.Unprotect(_db.GetSetting("zoho_refresh_token")),
             ZohoAccountId = _db.GetSetting("zoho_account_id"),
 
+            EmailFontFamily = StrOr(_db.GetSetting("email_font_family"), "Microsoft YaHei UI"),
+            EmailFontSize = DoubleOr(_db.GetSetting("email_font_size"), 11),
+            EmailFontColor = StrOr(_db.GetSetting("email_font_color"), "#333333"),
+
             FirstSyncDays = IntOr(_db.GetSetting("first_sync_days"), 365),
             MaxBodyChars = IntOr(_db.GetSetting("max_body_chars"), 6000),
             EnableAutoSync = BoolOr(_db.GetSetting("auto_sync"), true),
@@ -102,6 +106,10 @@ public class WorkflowService
         _db.SetSetting("zoho_client_secret", CredentialService.Protect(c.ZohoClientSecret));
         _db.SetSetting("zoho_refresh_token", CredentialService.Protect(c.ZohoRefreshToken));
         _db.SetSetting("zoho_account_id", c.ZohoAccountId);
+
+        _db.SetSetting("email_font_family", c.EmailFontFamily);
+        _db.SetSetting("email_font_size", c.EmailFontSize.ToString());
+        _db.SetSetting("email_font_color", c.EmailFontColor);
 
         _db.SetSetting("first_sync_days", c.FirstSyncDays.ToString());
         _db.SetSetting("max_body_chars", c.MaxBodyChars.ToString());
@@ -238,6 +246,7 @@ public class WorkflowService
             // （被“停止同步”取消时跳过重量级 RebuildThreads，避免“正在停止同步…”长时间不结束；
             //   已同步的邮件仍保留在库中，下次同步或启动重建时会显示）
             FlushAutoTrackedMailboxes(progress);
+            FlushContactNames(); // 把本次扫描到的联系人姓名持久化
         }
 
         // 3-5. AI 阶段：仅当有新邮件时执行。无新邮件时跳过 AI 产品/客户分析与工单状态总结，
@@ -322,7 +331,7 @@ public class WorkflowService
             f.Name.Equals("Spam", StringComparison.OrdinalIgnoreCase) ||
             f.Name.Equals("Junk", StringComparison.OrdinalIgnoreCase));
         var toSync = new List<ZohoFolder>();
-        // 先发件箱、后收件箱：发件箱里用户提交工单的报障邮件先入库（记下 ZohoThreadId），
+        // 先发件箱、后收件箱：发件箱里用户提新工单的报障邮件先入库（记下 ZohoThreadId），
         // 之后扫描收件箱时，客服回复即使发件人不在关注列表，也能通过 ThreadId 命中“已关注线索”而被拉取。
         if (sent != null) toSync.Add(sent);
         if (inbox != null) toSync.Add(inbox);
@@ -381,6 +390,8 @@ public class WorkflowService
                 scanned++;
                 // 自动发现客服邮箱：扫描参与者中 “support@…manageengine…” 的地址自动加入关注列表
                 AutoTrackSupportMailboxes(m.FromAddress, m.ToAddress, m.CcAddress);
+                // 从收件/抄送的 “姓名<邮箱>” 累积联系人姓名（供提新工单窗口显示）
+                AccumulateContactNames(m.ToAddress, m.CcAddress);
                 // 先判断是否属于关注的邮箱，再看本地是否已下载：
                 // 新增关注邮箱后全量重扫时，能重新拉取其相关且未下载的邮件
                 if (!IsMonitoredSummary(m)) continue;
@@ -850,6 +861,156 @@ public class WorkflowService
     public List<string> GetKnownProducts() => _db.GetKnownProducts();
     public List<string> GetKnownEnterprises() => _db.GetKnownEnterprises();
 
+    // ================= 提新工单（发信） =================
+
+    /// <summary>可用的客服收件邮箱（关注的客服邮箱，去重；含自动发现的 support 邮箱）。</summary>
+    public List<string> GetSupportRecipients()
+        => _config.MonitoredAddresses.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    // ================= 联系人姓名映射（从收件/抄送的 “姓名<邮箱>” 提取） =================
+    private readonly Dictionary<string, Dictionary<string, int>> _contactNames = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>从 to/cc 原始地址串累积 邮箱→姓名 出现次数（姓名取出现最多者）。</summary>
+    private void AccumulateContactNames(params string[] addressStrings)
+    {
+        foreach (var s in addressStrings)
+            foreach (var (email, name) in ZohoMailApiService.ExtractContactNames(s))
+            {
+                if (email.Length == 0) continue;
+                if (!_contactNames.TryGetValue(email, out var m))
+                {
+                    m = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                    _contactNames[email] = m;
+                }
+                var key = string.IsNullOrWhiteSpace(name) ? "" : name;
+                m[key] = m.GetValueOrDefault(key) + 1;
+            }
+    }
+
+    /// <summary>把本次同步累积的联系人姓名持久化（每邮箱取出现次数最多的姓名，覆盖合并进既有映射）。</summary>
+    private void FlushContactNames()
+    {
+        if (_contactNames.Count == 0) return;
+        var merged = LoadContactNames();
+        foreach (var kv in _contactNames)
+        {
+            var best = kv.Value.OrderByDescending(x => x.Value).First().Key;
+            if (!string.IsNullOrWhiteSpace(best)) merged[kv.Key] = best;
+        }
+        _db.SetSetting("contact_names", JsonSerializer.Serialize(merged));
+        _contactNames.Clear();
+    }
+
+    /// <summary>已提取的 邮箱→姓名 映射（可能为空）。</summary>
+    public Dictionary<string, string> LoadContactNames()
+    {
+        var s = _db.GetSetting("contact_names");
+        if (string.IsNullOrWhiteSpace(s)) return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(s) ?? new Dictionary<string, string>();
+            return new Dictionary<string, string>(dict, StringComparer.OrdinalIgnoreCase);
+        }
+        catch { return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); }
+    }
+
+    /// <summary>把邮箱列表格式化为 “姓名 <邮箱>”（姓名取联系人映射；无姓名则纯邮箱）。</summary>
+    public List<string> FormatRecipients(IEnumerable<string> emails)
+    {
+        var names = LoadContactNames();
+        return emails.Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(e => names.TryGetValue(e, out var n) && !string.IsNullOrWhiteSpace(n) ? $"{n} <{e}>" : e)
+            .ToList();
+    }
+
+    /// <summary>从 “姓名 <邮箱>” 提取纯邮箱；没有尖括号则原样返回（可编辑下拉可能直接输入邮箱）。</summary>
+    public static string ExtractEmail(string display)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(display ?? "", @"<([^<>]+)>");
+        return m.Success ? m.Groups[1].Value.Trim() : (display ?? "").Trim();
+    }
+
+    /// <summary>某客户的接口人邮箱：从邮件库中该客户相关邮件里出现的客户方邮箱（排除 我方/客服/厂商 域名）。</summary>
+    public List<string> GetCustomerContacts(string enterprise)
+    {
+        var set = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(enterprise)) return set.ToList();
+        foreach (var e in _db.LoadEmailsMeta())
+        {
+            if (!string.Equals(e.Enterprise, enterprise, StringComparison.OrdinalIgnoreCase)) continue;
+            AddCustomerContact(e.FromAddress, set);
+            foreach (var a in SplitList(e.ToAddresses)) AddCustomerContact(a, set);
+            foreach (var a in SplitList(e.CcAddresses)) AddCustomerContact(a, set);
+        }
+        return set.ToList();
+    }
+
+    private void AddCustomerContact(string addr, SortedSet<string> set)
+    {
+        if (string.IsNullOrWhiteSpace(addr) || IsInternalAddress(addr)) return;
+        set.Add(addr.Trim());
+    }
+
+    /// <summary>是否为 我方/厂商/客服 内部地址（不是客户接口人）：本机邮箱、关注客服邮箱、我方同事域名、厂商(zoho/manageengine)域名。</summary>
+    private bool IsInternalAddress(string addr)
+    {
+        addr = addr.Trim();
+        if (string.Equals(addr, _config.ImapUsername, StringComparison.OrdinalIgnoreCase)) return true;
+        if (_config.MonitoredAddresses.Any(m => string.Equals(m.Trim(), addr, StringComparison.OrdinalIgnoreCase)))
+            return true;
+        var at = addr.LastIndexOf('@');
+        if (at < 0 || at == addr.Length - 1) return true;
+        var domain = addr[(at + 1)..].Trim();
+        if (domain.Contains("zoho", StringComparison.OrdinalIgnoreCase) ||
+            domain.Contains("manageengine", StringComparison.OrdinalIgnoreCase)) return true; // 厂商域名
+        foreach (var d in _config.MySupportDomains)
+        {
+            var dd = d.Trim();
+            if (dd.Length == 0) continue;
+            if (string.Equals(dd, domain, StringComparison.OrdinalIgnoreCase) ||
+                domain.EndsWith("." + dd, StringComparison.OrdinalIgnoreCase)) return true; // 我方同事域名
+        }
+        return false;
+    }
+
+    /// <summary>发送工单邮件（Zoho Mail REST API，需要 ZohoMail.messages.CREATE scope）。发件人 = 当前账号。返回 (成功, 错误信息)。</summary>
+    public async Task<(bool Success, string? Error)> SendTicketEmailAsync(
+        string to, string? cc, string subject, string content,
+        IEnumerable<string>? attachments = null, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(_config.ZohoClientId) || string.IsNullOrEmpty(_config.ZohoRefreshToken))
+            return (false, "未配置 Zoho REST API，无法发送邮件。");
+        var from = _config.ImapUsername;
+        if (string.IsNullOrEmpty(from))
+            return (false, "未配置发件邮箱（同步设置中的账号）。");
+        try
+        {
+            var api = new ZohoMailApiService(_config);
+            var accountId = await api.GetAccountIdAsync(ct);
+            if (accountId == null) return (false, "无法获取 Zoho 账号，请检查 Zoho REST API 配置。");
+            return await api.SendEmailAsync(accountId.Value, from, to, cc, subject, content, "html", ct, attachments);
+        }
+        catch (Exception ex)
+        {
+            return (false, $"发送失败：{ex.Message}");
+        }
+    }
+
+    // ================= 签名 =================
+
+    /// <summary>加载全部签名（无则返回空列表）。</summary>
+    public List<EmailSignature> LoadSignatures()
+    {
+        var s = _db.GetSetting("signatures");
+        if (string.IsNullOrWhiteSpace(s)) return new List<EmailSignature>();
+        try { return JsonSerializer.Deserialize<List<EmailSignature>>(s) ?? new List<EmailSignature>(); }
+        catch { return new List<EmailSignature>(); }
+    }
+
+    /// <summary>保存全部签名（覆盖）。</summary>
+    public void SaveSignatures(List<EmailSignature> list)
+        => _db.SetSetting("signatures", JsonSerializer.Serialize(list));
+
     /// <summary>读取某封邮件的 AI 翻译缓存（持久化到数据库，未翻译过返回空串）。</summary>
     public string GetEmailTranslation(long id) => _db.GetEmailTranslation(id);
 
@@ -884,6 +1045,12 @@ public class WorkflowService
 
     /// <summary>按邮件 Id 列表批量清除“新同步”标记（客户/产品右键“全部已读”）。</summary>
     public void MarkEmailsSeen(IEnumerable<long> ids) => _db.MarkEmailsSeen(ids);
+
+    /// <summary>设置/清除某封邮件的星标。</summary>
+    public void SetEmailStarred(long id, bool starred) => _db.SetEmailStarred(id, starred);
+
+    /// <summary>含星标邮件的线索 Id 集合（供“仅星标”过滤）。</summary>
+    public HashSet<long> GetStarredThreadIds() => _db.GetStarredThreadIds();
 
     /// <summary>清除单封邮件的新同步标记（点击查看后即已读）。</summary>
     public void MarkEmailSeen(long id) => _db.MarkEmailSeen(id);
@@ -1010,6 +1177,7 @@ public class WorkflowService
     // ================= helpers =================
 
     private static int IntOr(string s, int def) => int.TryParse(s, out var v) ? v : def;
+    private static double DoubleOr(string s, double def) => double.TryParse(s, out var v) ? v : def;
     private static bool BoolOr(string s, bool def) => bool.TryParse(s, out var v) ? v : def;
     private static string StrOr(string s, string def) => string.IsNullOrEmpty(s) ? def : s;
 

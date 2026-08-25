@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using TicketManager.Models;
 using TicketManager.Services;
 
@@ -122,6 +123,49 @@ public class MainViewModel : ViewModelBase
         }
     }
 
+    private bool _newMailOnly;
+    /// <summary>“仅新邮件”过滤：只显示含有新同步邮件的线索（切换时即时重建树）。</summary>
+    public bool NewMailOnly
+    {
+        get => _newMailOnly;
+        set
+        {
+            if (Set(ref _newMailOnly, value))
+                RebuildTreeWithBusyCursor();
+        }
+    }
+
+    private bool _starredOnly;
+    /// <summary>“仅星标”过滤：只显示含有星标邮件的线索（切换时即时重建树）。</summary>
+    public bool StarredOnly
+    {
+        get => _starredOnly;
+        set
+        {
+            if (Set(ref _starredOnly, value))
+                RebuildTreeWithBusyCursor();
+        }
+    }
+
+    /// <summary>在忙碌光标下重建树：过滤切换重建可能耗时，先让鼠标变为等待状再执行（
+    /// 用 Background 优先级延迟执行，确保等待光标先渲染出来；无 WPF 环境时回退为同步重建）。</summary>
+    private void RebuildTreeWithBusyCursor()
+    {
+        if (Application.Current == null) { RebuildTree(); return; }
+        Mouse.OverrideCursor = Cursors.Wait;
+        Application.Current.Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            try
+            {
+                RebuildTree();
+            }
+            finally
+            {
+                Mouse.OverrideCursor = null;
+            }
+        }));
+    }
+
     /// <summary>
     /// 线索是否匹配检索关键字（留空显示全部）。
     /// 匹配范围：线索工单号 + 线程内任意邮件的主题/AI 标题。
@@ -139,6 +183,15 @@ public class MainViewModel : ViewModelBase
                 return true;
         return false;
     }
+
+    /// <summary>线索内是否存在新同步的邮件（“仅新邮件”过滤依据）。</summary>
+    private static bool HasNewMail(TicketThread t) => t.Emails.Any(e => e.IsNew);
+
+    /// <summary>线索是否匹配当前全部过滤（检索关键字 + 仅新邮件 + 仅星标）。
+    /// 建树（RebuildTree）与同步后增量合并（MergeThreads）必须用同一套条件，
+    /// 否则同步会把不匹配过滤的线索也插进树，表现为“同步后退出过滤状态”。</summary>
+    private bool MatchesFilter(TicketThread t)
+        => MatchesSearch(t) && (!_newMailOnly || HasNewMail(t)) && (!_starredOnly || t.Emails.Any(e => e.Starred));
 
     private ThreadViewModel? _selectedThread;
     public ThreadViewModel? SelectedThread
@@ -292,8 +345,12 @@ public class MainViewModel : ViewModelBase
     public ICommand StopSyncCommand { get; }
     public ICommand TranslateEmailCommand { get; }
     public ICommand OpenSettingsCommand { get; }
+    public ICommand SignaturesCommand { get; }
     public ICommand ClearDataCommand { get; }
     public ICommand JumpToNewMailCommand { get; }
+    public ICommand SubmitTicketCommand { get; }
+    public ICommand RegenerateAiSummaryCommand { get; }
+    public ICommand FontSettingsCommand { get; }
 
     /// <summary>跳转新邮件的请求（由主窗口订阅执行 TreeView 滚动选中）。</summary>
     public event Action? JumpToNewMailRequested;
@@ -309,8 +366,12 @@ public class MainViewModel : ViewModelBase
         StopSyncCommand = new RelayCommand(_ => StopSync());
         TranslateEmailCommand = new RelayCommand(async _ => await TranslateEmailAsync());
         OpenSettingsCommand = new RelayCommand(_ => OpenSettings());
+        SignaturesCommand = new RelayCommand(_ => OpenSignatures());
         ClearDataCommand = new RelayCommand(async _ => await ClearAllDataAsync());
         JumpToNewMailCommand = new RelayCommand(_ => JumpToNewMailRequested?.Invoke());
+        SubmitTicketCommand = new RelayCommand(_ => OpenSubmitTicket());
+        RegenerateAiSummaryCommand = new RelayCommand(async _ => await RegenerateSelectedThreadStatusAsync());
+        FontSettingsCommand = new RelayCommand(_ => OpenFontSettings());
     }
 
     // ---- 多线索选择（Ctrl/Shift 多选）与批量设置产品/客户 ----
@@ -653,6 +714,18 @@ public class MainViewModel : ViewModelBase
         }
     }
 
+    /// <summary>用 AI 重新总结当前选中的线索（F9 热键）。未选中线索时不执行。</summary>
+    private async Task RegenerateSelectedThreadStatusAsync()
+    {
+        var rootId = SelectedThread?.Children.FirstOrDefault(c => c.IsRoot)?.Email.Id ?? 0;
+        if (rootId <= 0)
+        {
+            StatusText = "未选中工单线索，无法进行 AI 总结";
+            return;
+        }
+        await RegenerateThreadStatusAsync(rootId);
+    }
+
     /// <summary>立即用 AI 重新生成某线程的状态/总结并就地刷新显示（不重建树）。</summary>
     public async Task RegenerateThreadStatusAsync(long rootEmailId)
     {
@@ -743,9 +816,31 @@ public class MainViewModel : ViewModelBase
         return true;
     }
 
-    private void OpenSettings()
+    /// <summary>打开“提新工单”窗口（提交新故障给客服）。</summary>
+    private void OpenSubmitTicket()
     {
-        var oldMonitored = _workflow.Config.MonitoredAddresses.ToList();
+        var win = new Views.SubmitTicketWindow(_workflow);
+        win.ShowDialog();
+    }
+
+    /// <summary>打开“签名管理”窗口（维护多个邮件签名，供提新工单发信使用）。</summary>
+    private void OpenSignatures()
+    {
+        var win = new Views.SignaturesWindow(_workflow);
+        win.ShowDialog();
+    }
+
+    /// <summary>打开“邮件字体设置”窗口（统一应用于 邮件正文 与 签名）。</summary>
+    private void OpenFontSettings()
+    {
+        var win = new Views.FontSettingsWindow(_workflow);
+        if (Application.Current.MainWindow is { IsVisible: true } owner)
+            win.Owner = owner;
+        win.ShowDialog();
+    }
+
+    private void OpenSettings()
+    {        var oldMonitored = _workflow.Config.MonitoredAddresses.ToList();
         var win = new Views.SettingsWindow(_workflow);
         // 仅当主窗口已显示才设为 Owner：主窗口未显示/隐藏到托盘时（如启动早期、窗口关闭到托盘），
         // 给未显示的 Window 设 Owner 会抛 InvalidOperationException，导致设置窗口打不开
@@ -846,6 +941,42 @@ public class MainViewModel : ViewModelBase
         target.RefreshNewState();
     }
 
+    /// <summary>切换星标：根邮件（线索行）→ 整条线索所有邮件批量加/取消星标；其余邮件 → 只切本封。</summary>
+    public void ToggleStar(EmailNodeViewModel node)
+    {
+        if (node.IsRoot)
+        {
+            // 线索星标：线索内任一邮件有星标 → 全部清除；否则全部标星
+            var thread = node.ThreadOwner.Thread;
+            var hasStar = thread.Emails.Any(e => e.Starred);
+            foreach (var e in thread.Emails)
+            {
+                e.Starred = !hasStar;
+                _workflow.SetEmailStarred(e.Id, !hasStar);
+            }
+            foreach (var root in node.ThreadOwner.Children)
+                RefreshSubtreeStar(root);
+            StatusText = hasStar ? $"已清除线索内 {thread.Emails.Count} 封邮件的星标" : $"已为该线索 {thread.Emails.Count} 封邮件标星";
+        }
+        else
+        {
+            node.Email.Starred = !node.Email.Starred;
+            _workflow.SetEmailStarred(node.Email.Id, node.Email.Starred);
+            node.RefreshStarState();
+            // 单封星标变化会影响线索首节点（根）的“有星标”聚合显示，需一并刷新整条线索
+            foreach (var root in node.ThreadOwner.Children)
+                RefreshSubtreeStar(root);
+        }
+        // 不因星标变化立即重建“仅星标”过滤视图：取消星标后线索仍保留显示，直到切换开关/搜索/下次重建
+    }
+
+    /// <summary>递归刷新星标显示（批量切换线索星标后调用）。</summary>
+    private static void RefreshSubtreeStar(EmailNodeViewModel n)
+    {
+        n.RefreshStarState();
+        foreach (var c in n.Children) RefreshSubtreeStar(c);
+    }
+
     /// <summary>把指定范围内的所有线索（客户/产品）的所有邮件标记为已读，并就地刷新加粗状态。</summary>
     public void MarkGroupSeen(IEnumerable<EmailNodeViewModel> roots)
     {
@@ -933,7 +1064,7 @@ public class MainViewModel : ViewModelBase
         var supportAddresses = _workflow.Config.MonitoredAddresses;
         var selfAddress = _workflow.Config.ImapUsername;
         var customerGroups = threads
-            .Where(MatchesSearch)
+            .Where(MatchesFilter)
             .GroupBy(t => string.IsNullOrEmpty(t.Enterprise) ? "未分类客户" : t.Enterprise);
 
         var orderedCustomers = mode switch
@@ -1031,11 +1162,13 @@ public class MainViewModel : ViewModelBase
         foreach (var t in newThreads)
             if (GetRootEmail(t) is { } r) newRootIds.Add(r.Id);
 
-        // 1. 移除已消失的线索（并清理空分组）
+        // 1. 移除已消失或不再匹配过滤的线索（并清理空分组）；
+        //    “仅新邮件/仅星标/检索关键字”模式下同时隐藏已不满足条件的线索
         foreach (var cust in Customers.ToList())
             foreach (var prod in cust.Products.ToList())
                 foreach (var root in prod.Threads.ToList())
-                    if (!newRootIds.Contains(root.Email.Id))
+                    if (!newRootIds.Contains(root.Email.Id) ||
+                        !MatchesFilter(root.ThreadOwner.Thread))
                         prod.Threads.Remove(root);
         foreach (var cust in Customers.ToList())
             foreach (var prod in cust.Products.ToList())
@@ -1043,9 +1176,10 @@ public class MainViewModel : ViewModelBase
         foreach (var cust in Customers.ToList())
             if (cust.Products.Count == 0) Customers.Remove(cust);
 
-        // 2. 插入新线索 / 更新已有线索
+        // 2. 插入新线索 / 更新已有线索（只处理匹配当前全部过滤的线索）
         foreach (var t in newThreads)
         {
+            if (!MatchesFilter(t)) continue;
             var rootEmail = GetRootEmail(t);
             if (rootEmail == null) continue;
             var existing = FindRootNode(rootEmail.Id);

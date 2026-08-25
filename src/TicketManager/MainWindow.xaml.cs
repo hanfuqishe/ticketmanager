@@ -290,6 +290,13 @@ public partial class MainWindow : Window
         _vm.SearchText = "";
     }
 
+    /// <summary>菜单“检索…”：聚焦按键栏的检索框并全选，便于直接输入关键字。</summary>
+    private void FocusSearch_Click(object sender, RoutedEventArgs e)
+    {
+        SearchBox.Focus();
+        SearchBox.SelectAll();
+    }
+
     /// <summary>展开层次（视图 → 展开层次）：一次性动作，只展开到目标层次，不持久化、不勾选；之后由用户操作决定展开状态。</summary>
     private async void SetExpandDepth_Click(object sender, RoutedEventArgs e)
     {
@@ -342,6 +349,9 @@ public partial class MainWindow : Window
     private void ContextMenu_Opened(object sender, RoutedEventArgs e)
     {
         if (sender is not ContextMenu menu || menu.DataContext is not EmailNodeViewModel ev) return;
+        // 星标菜单项文字随当前状态切换
+        if (menu.FindName("StarMenuItem") is MenuItem starMi)
+            starMi.Header = ev.IsStarred ? "取消星标" : "星标";
         // 目标集合：右键线索在 Ctrl/Shift 选中集内 → 应用到整个选中集；否则仅当前线索
         var targets = _vm.SelectedThreadIds.Contains(ev.Email.ThreadId)
             ? _vm.SelectedThreadIds.ToList()
@@ -363,6 +373,13 @@ public partial class MainWindow : Window
         var multi = targets.Count > 1;
         if (multi)
             sub.Header = (isProduct ? "设置产品" : "设置客户") + $"（{targets.Count} 条）";
+
+        // 顶部提供“手工输入…”，允许输入候选列表里没有的自定义名称
+        var manual = new MenuItem { Header = "✍ 手工输入…", Tag = (targets, isProduct) };
+        manual.Click += SetMetaManual_Click;
+        sub.Items.Add(manual);
+        if (names.Count > 0) sub.Items.Add(new Separator());
+
         foreach (var name in names)
         {
             var mi = new MenuItem
@@ -375,14 +392,36 @@ public partial class MainWindow : Window
             mi.Click += SetMetaDirect_Click;
             sub.Items.Add(mi);
         }
-        sub.IsEnabled = names.Count > 0;
+        sub.IsEnabled = true; // 手工输入兜底：即使没有候选名称也允许设置
     }
 
+    /// <summary>点击候选列表中的名称：直接设置。</summary>
     private async void SetMetaDirect_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem mi || mi.Tag is not (List<long> targets, string name, bool isProduct)) return;
+        await ApplyMetaAsync(targets, name, isProduct);
+    }
+
+    /// <summary>点击“手工输入…”：弹出输入框，用自定义名称设置。</summary>
+    private async void SetMetaManual_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem mi || mi.Tag is not (List<long> targets, bool isProduct)) return;
+        var win = new TicketManager.Views.MetaInputWindow(isProduct) { Owner = this };
+        if (win.ShowDialog() != true) return;
+        var name = win.InputName.Trim();
+        if (string.IsNullOrEmpty(name))
+        {
+            _vm.StatusText = "未输入名称，已取消设置";
+            return;
+        }
+        await ApplyMetaAsync(targets, name, isProduct);
+    }
+
+    /// <summary>把目标线索的产品/客户设置为指定名称（直接设置与手工输入共用）。</summary>
+    private async Task ApplyMetaAsync(List<long> targets, string name, bool isProduct)
     {
         try
         {
-            if (sender is not MenuItem mi || mi.Tag is not (List<long> targets, string name, bool isProduct)) return;
             // 先记录被设置线索的根邮件 Id（线程重建后 ThreadId 会变，邮件 Id 稳定），用于保持选中
             var rootEmailIds = _vm.GetRootEmailIds(targets);
             MetaLog($"开始: targets=[{string.Join(",", targets)}] name={name} isProduct={isProduct} rootEmailIds=[{string.Join(",", rootEmailIds)}]");
@@ -406,7 +445,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            App.Log("SetMetaDirect", ex);
+            App.Log("SetMeta", ex);
             _vm.StatusText = "设置失败：" + ex.Message;
         }
     }
@@ -779,7 +818,8 @@ public partial class MainWindow : Window
         return string.IsNullOrWhiteSpace(s) ? "全部" : s;
     }
 
-    private int _newMailIndex = -1;
+    /// <summary>上次跳转的新邮件 Id（用于从其后继续，避免清除 IsNew 后集合缩短导致跳过）。</summary>
+    private long _lastJumpedEmailId;
 
     /// <summary>收集树中所有新同步的邮件节点（按当前树遍历顺序）。</summary>
     private List<EmailNodeViewModel> CollectNewMailNodes()
@@ -813,14 +853,18 @@ public partial class MainWindow : Window
         var nodes = CollectNewMailNodes();
         if (nodes.Count == 0)
         {
-            _newMailIndex = -1;
+            _lastJumpedEmailId = 0;
             _vm.StatusText = "没有新同步的邮件";
             return;
         }
-        _newMailIndex = (_newMailIndex + 1) % nodes.Count;
-        var node = nodes[_newMailIndex];
+        // 从上一次跳转的邮件之后继续（按邮件 Id 定位）：跳转会清除该邮件 IsNew、集合随之缩短，
+        // 若用“下标 +1”会因为列表变短而错位跳过一个（隔一个跳一个）
+        var start = nodes.FindIndex(n => n.Email.Id == _lastJumpedEmailId);
+        var next = (start + 1) % nodes.Count;
+        var node = nodes[next];
+        _lastJumpedEmailId = node.Email.Id;
         SelectAndScrollToEmail(node);
-        _vm.StatusText = $"已跳转到新邮件（{_newMailIndex + 1}/{nodes.Count}）";
+        _vm.StatusText = $"已跳转到新邮件（{next + 1}/{nodes.Count}）";
     }
 
     /// <summary>展开所在 客户/产品 分组并滚动选中指定邮件节点。</summary>
@@ -1176,6 +1220,20 @@ public partial class MainWindow : Window
         }
         Clipboard.SetText(ticket);
         _vm.StatusText = $"已复制工单号：{ticket}";
+    }
+
+    /// <summary>点击邮件行星标图标：切换该邮件星标。</summary>
+    private void ToggleStar_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is EmailNodeViewModel ev)
+            _vm.ToggleStar(ev);
+    }
+
+    /// <summary>右键“星标/取消星标”：切换该邮件星标。</summary>
+    private void ToggleStarMenu_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is MenuItem mi && mi.Tag is EmailNodeViewModel ev)
+            _vm.ToggleStar(ev);
     }
 
     private void Exit_Click(object sender, RoutedEventArgs e) => Close();

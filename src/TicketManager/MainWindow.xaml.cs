@@ -21,6 +21,10 @@ public partial class MainWindow : Window
 {
     private readonly MainViewModel _vm;
     private System.Windows.Forms.NotifyIcon? _trayIcon;
+    private System.Drawing.Icon? _trayBaseIcon; // 原始托盘图标（无角标）
+    private System.Windows.Threading.DispatcherTimer? _trayBadgeTimer;
+    private int _lastBadgeCount = -1;
+    private IntPtr _trayBadgeHIcon; // 当前角标图标的句柄（需 DestroyIcon 释放）
     private bool _trayHintShown;
 
     public MainWindow()
@@ -133,14 +137,18 @@ public partial class MainWindow : Window
     /// <summary>当前邮件未展开的引用文本（展开后置空）。</summary>
     private string? _pendingQuote;
 
-    /// <summary>初始化系统托盘图标（最小化时隐藏到托盘）。</summary>
+    /// <summary>初始化系统托盘图标（常驻显示，最小化时窗口隐藏但图标仍在）。</summary>
     private void SetupTray()
     {
         _trayIcon = new System.Windows.Forms.NotifyIcon();
         try
         {
             using var s = Application.GetResourceStream(new Uri("pack://application:,,,/TicketManager.ico"))?.Stream;
-            if (s != null) _trayIcon.Icon = new System.Drawing.Icon(s);
+            if (s != null)
+            {
+                _trayBaseIcon = new System.Drawing.Icon(s);
+                _trayIcon.Icon = _trayBaseIcon;
+            }
         }
         catch { }
         _trayIcon.Text = "工单邮件管理器";
@@ -149,18 +157,26 @@ public partial class MainWindow : Window
         menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
         menu.Items.Add("退出", null, (_, _) => Close());
         _trayIcon.ContextMenuStrip = menu;
-        _trayIcon.DoubleClick += (_, _) => RestoreFromTray();
-        _trayIcon.Visible = false;
+        // 单击左键即恢复主窗口（新邮件角标见 UpdateTrayBadge）
+        _trayIcon.MouseClick += (_, e) =>
+        {
+            if (e.Button == System.Windows.Forms.MouseButtons.Left) RestoreFromTray();
+        };
+        _trayIcon.Visible = true; // 常驻显示（无论是否最小化）
+        // 托盘角标：定时刷新新邮件数量（开销极小）
+        _trayBadgeTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+        _trayBadgeTimer.Tick += (_, _) => UpdateTrayBadge();
+        _trayBadgeTimer.Start();
     }
 
-    /// <summary>最小化时隐藏到系统托盘（后台仍监听新邮件）。</summary>
+    /// <summary>最小化时隐藏窗口到系统托盘（托盘图标常驻，后台仍监听新邮件）。</summary>
     protected override void OnStateChanged(EventArgs e)
     {
         base.OnStateChanged(e);
         if (WindowState == WindowState.Minimized && _trayIcon != null)
         {
             Hide();
-            _trayIcon.Visible = true;
+            UpdateTrayBadge(); // 立即刷新角标（含新邮件数量）
             if (!_trayHintShown)
             {
                 _trayHintShown = true;
@@ -170,9 +186,57 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>新邮件数量变化 → 刷新托盘角标（红点+数量）；无新邮件时恢复原图标。</summary>
+    private void UpdateTrayBadge()
+    {
+        if (_trayIcon == null || !_trayIcon.Visible || _trayBaseIcon == null) return;
+        var n = _vm.NewEmailCount;
+        if (n == _lastBadgeCount) return;
+        _lastBadgeCount = n;
+        if (_trayBadgeHIcon != IntPtr.Zero) { DestroyIcon(_trayBadgeHIcon); _trayBadgeHIcon = IntPtr.Zero; }
+        if (n > 0)
+        {
+            var (icon, h) = MakeBadgeIcon(_trayBaseIcon, n);
+            _trayIcon.Icon = icon;
+            _trayBadgeHIcon = h;
+        }
+        else
+        {
+            _trayIcon.Icon = _trayBaseIcon;
+        }
+    }
+
+    /// <summary>在基础图标右下角绘制亮黄色数字角标，返回图标与其句柄（句柄需 DestroyIcon 释放）。</summary>
+    private static (System.Drawing.Icon Icon, IntPtr HIcon) MakeBadgeIcon(System.Drawing.Icon baseIcon, int count)
+    {
+        using var bmp = baseIcon.ToBitmap();
+        using var g = System.Drawing.Graphics.FromImage(bmp);
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        var sz = Math.Max(11, bmp.Width / 2); // 角标尺寸（相对图标大小）
+        var x = bmp.Width - sz - 1;
+        var y = bmp.Height - sz - 1;
+        using (var brush = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(235, 255, 214, 0))) // 明亮黄色背景（与红色图标区分）
+            g.FillEllipse(brush, x, y, sz, sz);
+        using (var pen = new System.Drawing.Pen(System.Drawing.Color.White, 1))
+            g.DrawEllipse(pen, x, y, sz, sz);
+        var text = count > 99 ? "99+" : count.ToString();
+        using var font = new System.Drawing.Font("Segoe UI", sz * 0.5f, System.Drawing.FontStyle.Bold);
+        using var fmt = new System.Drawing.StringFormat
+        {
+            Alignment = System.Drawing.StringAlignment.Center,
+            LineAlignment = System.Drawing.StringAlignment.Center
+        };
+        using var dark = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(255, 62, 39, 35)); // 深色数字，亮黄底上清晰可读
+        g.DrawString(text, font, dark, new System.Drawing.RectangleF(x, y, sz, sz), fmt);
+        var h = bmp.GetHicon();
+        return (System.Drawing.Icon.FromHandle(h), h);
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool DestroyIcon(IntPtr hIcon);
+
     private void RestoreFromTray()
     {
-        if (_trayIcon != null) _trayIcon.Visible = false;
         Show();
         WindowState = WindowState.Normal;
         Activate();
@@ -201,6 +265,9 @@ public partial class MainWindow : Window
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
         _vm.StopAutoSync(); // 关闭时停止后台自动收取
+        _trayBadgeTimer?.Stop();
+        _trayBadgeTimer = null;
+        if (_trayBadgeHIcon != IntPtr.Zero) { DestroyIcon(_trayBadgeHIcon); _trayBadgeHIcon = IntPtr.Zero; }
         if (_trayIcon != null)
         {
             _trayIcon.Visible = false;

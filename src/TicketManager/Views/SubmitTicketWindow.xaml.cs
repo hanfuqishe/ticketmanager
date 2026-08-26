@@ -34,6 +34,21 @@ public partial class SubmitTicketWindow : Window
         _vm.LoadContacts();
     }
 
+    /// <summary>抄送栏选择我方同事：追加到抄送列表（逗号分隔、去重）。</summary>
+    private void CcColleagueBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ComboBox cb || cb.SelectedItem is not string item) return;
+        var emails = (_vm.CcEmails ?? "").Split(';', ',')
+            .Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+        var email = WorkflowService.ExtractEmail(item);
+        if (!emails.Any(x => string.Equals(WorkflowService.ExtractEmail(x), email, StringComparison.OrdinalIgnoreCase)))
+        {
+            emails.Add(item);
+            _vm.CcEmails = string.Join(", ", emails);
+        }
+        cb.SelectedItem = null; // 允许再次选择其他同事
+    }
+
     /// <summary>添加附件（可多选）。</summary>
     private void AddAttachment_Click(object sender, RoutedEventArgs e) => _vm.AddAttachment();
 

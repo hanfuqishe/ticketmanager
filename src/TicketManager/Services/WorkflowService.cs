@@ -973,6 +973,47 @@ public class WorkflowService
         return false;
     }
 
+    /// <summary>我方同事（设置中“我方域名”下的邮箱，排除本人）：从邮件库出现的地址中筛出，供提工单抄送候选。</summary>
+    public List<string> GetColleagueContacts()
+    {
+        var set = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in _db.LoadEmailsMeta())
+        {
+            AddColleague(e.FromAddress, set);
+            foreach (var a in SplitList(e.ToAddresses)) AddColleague(a, set);
+            foreach (var a in SplitList(e.CcAddresses)) AddColleague(a, set);
+        }
+        return set.ToList();
+    }
+
+    private void AddColleague(string addr, SortedSet<string> set)
+    {
+        addr = (addr ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(addr)) return;
+        if (string.Equals(addr, _config.ImapUsername, StringComparison.OrdinalIgnoreCase)) return; // 排除本人
+        var at = addr.LastIndexOf('@');
+        if (at < 0 || at == addr.Length - 1) return;
+        var local = addr[..at].ToLowerInvariant();
+        var domain = addr[(at + 1)..].Trim();
+        // 排除客服/厂商支持邮箱（收信人，不是同事）：已被关注 或 @前含 support 且 @后含 manageengine/zohocorp
+        if (_config.MonitoredAddresses.Any(m => string.Equals(m.Trim(), addr, StringComparison.OrdinalIgnoreCase)))
+            return;
+        var dl = domain.ToLowerInvariant();
+        if (local.Contains("support") && (dl.Contains("manageengine") || dl.Contains("zohocorp")))
+            return;
+        foreach (var d in _config.MySupportDomains)
+        {
+            var dd = d.Trim();
+            if (dd.Length == 0) continue;
+            if (string.Equals(dd, domain, StringComparison.OrdinalIgnoreCase) ||
+                domain.EndsWith("." + dd, StringComparison.OrdinalIgnoreCase))
+            {
+                set.Add(addr);
+                return;
+            }
+        }
+    }
+
     /// <summary>发送工单邮件（Zoho Mail REST API，需要 ZohoMail.messages.CREATE scope）。发件人 = 当前账号。返回 (成功, 错误信息)。</summary>
     public async Task<(bool Success, string? Error)> SendTicketEmailAsync(
         string to, string? cc, string subject, string content,

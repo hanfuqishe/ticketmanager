@@ -20,6 +20,9 @@ public class MainViewModel : ViewModelBase
     private TreeSortMode _sortMode = TreeSortMode.Time;
     private SortOption _selectedSort = null!;
 
+    /// <summary>当前新邮件（未读）数量，托盘角标显示用。</summary>
+    public int NewEmailCount => _threads.Sum(t => t.Emails.Count(e => e.IsNew));
+
     private ObservableCollection<CustomerGroupViewModel> _customers = new();
     public ObservableCollection<CustomerGroupViewModel> Customers => _customers;
 
@@ -45,8 +48,7 @@ public class MainViewModel : ViewModelBase
         set
         {
             if (!Set(ref _expandDepth, Math.Clamp(value, 1, 4))) return;
-            OnPropertyChanged(nameof(IsExpandDepth1));
-            OnPropertyChanged(nameof(IsExpandDepth2));
+            OnPropertyChanged(nameof(IsExpandDepth1));            OnPropertyChanged(nameof(IsExpandDepth2));
             OnPropertyChanged(nameof(IsExpandDepth3));
             OnPropertyChanged(nameof(IsExpandDepth4));
             _workflow.SetExpandDepth(_expandDepth); // 持久化，重启后保留

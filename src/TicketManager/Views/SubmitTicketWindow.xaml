@@ -58,8 +58,15 @@
                       ToolTip="该客户相关邮件中出现过的客户方邮箱（可输入自定义）；留空则不抄送"/>
 
             <TextBlock Grid.Row="4" Grid.Column="0" Text="抄送：" VerticalAlignment="Center"/>
-            <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding CcEmails}" Margin="8,4" Padding="4"
-                     ToolTip="多个邮箱用逗号或分号分隔（可含 姓名&lt;邮箱&gt;）；与客户接口人一起作为抄送"/>
+            <Grid Grid.Row="4" Grid.Column="1" Margin="8,4">
+                <TextBox x:Name="CcBox" Text="{Binding CcEmails}" Padding="4"
+                         ToolTip="多个邮箱用逗号或分号分隔（可含 姓名&lt;邮箱&gt;）；点右侧箭头选择我方同事；与客户接口人一起作为抄送"/>
+                <ComboBox x:Name="CcColleagueBox" HorizontalAlignment="Right" Width="24"
+                          ItemsSource="{Binding ColleagueCcOptions}"
+                          SelectionChanged="CcColleagueBox_SelectionChanged"
+                          Background="Transparent" BorderThickness="0"
+                          ToolTip="选择我方同事自动加入抄送"/>
+            </Grid>
 
             <TextBlock Grid.Row="5" Grid.Column="0" Text="故障现象：" VerticalAlignment="Center"/>
             <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding Fault, UpdateSourceTrigger=PropertyChanged}"

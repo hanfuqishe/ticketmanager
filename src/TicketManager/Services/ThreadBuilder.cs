@@ -23,13 +23,13 @@ public class ThreadBuilder
             if (!string.IsNullOrEmpty(e.MessageId) && !index.ContainsKey(e.MessageId))
                 index[e.MessageId] = e;
 
-        // 第一步：为每封邮件确定所属工单（含 References/后代继承）
+        // 第一步：为每封邮件确定所属工单（含 References/后代继承、英文自动回复主题 Ticket ID）
         var ticketOf = new Dictionary<long, string>();
         foreach (var e in allEmails)
         {
             var ticket = !string.IsNullOrEmpty(e.TicketNumber)
                 ? e.TicketNumber
-                : ResolveTicket(e, index) ?? ResolveTicketFromDescendants(e, allEmails, index);
+                : ParseAckTicketId(e.Subject) ?? ResolveTicket(e, index) ?? ResolveTicketFromDescendants(e, allEmails, index);
             ticketOf[e.Id] = ticket ?? "";
         }
 
@@ -81,13 +81,38 @@ public class ThreadBuilder
             }
         }
 
-        // 第四步：按工单号分组
+        // 第三步(补充)：报障主题匹配 —— 客服回复去掉 Re:/工单号标记后即回到原始报障主题；
+        // 发件箱的报障邮件（无工单号，Zoho REST 下还可能拿不到 threadId/引用头）据此并入对应工单。
+        // 例：回复主题 Re:[## 13801919 ##] [OPManager][施乐百]Privileges… → 基础主题 [OPManager][施乐百]Privileges…，
+        //     与发件箱报障邮件主题一致 → 该报障邮件并入工单 13801919 成为根。
+        var baseSubjectTickets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in allEmails)
+        {
+            if (string.IsNullOrEmpty(ticketOf[e.Id])) continue;
+            var bs = BaseSubject(e.Subject);
+            if (string.IsNullOrEmpty(bs) || baseSubjectTickets.ContainsKey(bs)) continue;
+            baseSubjectTickets[bs] = ticketOf[e.Id];
+        }
+        if (baseSubjectTickets.Count > 0)
+        {
+            foreach (var e in allEmails)
+            {
+                if (!string.IsNullOrEmpty(ticketOf[e.Id])) continue;
+                if (baseSubjectTickets.TryGetValue(BaseSubject(e.Subject), out var t))
+                    ticketOf[e.Id] = t;
+            }
+        }
+
+        // 第四步：按工单号分组；无工单号的先按 Zoho threadId 归并（同一会话同一线索），
+        // 都没有的才退回 企业|产品 兜底（避免把多条无关对话堆进同一条大杂烩线索）
         var groups = new Dictionary<string, List<EmailMessage>>(StringComparer.OrdinalIgnoreCase);
         foreach (var e in allEmails)
         {
             var ticket = ticketOf[e.Id];
             var key = string.IsNullOrEmpty(ticket)
-                ? $"__untitled__|{e.Enterprise}|{e.Product}"
+                ? e.ZohoThreadId is long zid && zid > 0
+                    ? $"__zthread__{zid}"
+                    : $"__untitled__|{e.Enterprise}|{e.Product}"
                 : ticket;
             if (!groups.TryGetValue(key, out var list)) { list = new List<EmailMessage>(); groups[key] = list; }
             list.Add(e);
@@ -312,6 +337,14 @@ public class ThreadBuilder
         return m.Success ? m.Groups["s"].Value.Trim() : "";
     }
 
+    /// <summary>从英文自动回复主题提取工单号：Acknowledgement ... – Ticket ID 13411754 → 13411754；无则返回 null。</summary>
+    private static string? ParseAckTicketId(string? subject)
+    {
+        if (string.IsNullOrEmpty(subject)) return null;
+        var m = Regex.Match(subject, @"Ticket\s*ID\s*[:#]?\s*(\d+)", RegexOptions.IgnoreCase);
+        return m.Success ? m.Groups[1].Value : null;
+    }
+
     /// <summary>主题归一化（HTML 实体解码、压缩空白、去 Re:/回复: 前缀），用于主题匹配。</summary>
     private static string NormalizeSubject(string s)
     {
@@ -319,6 +352,17 @@ public class ThreadBuilder
         s = System.Net.WebUtility.HtmlDecode(s);
         s = Regex.Replace(s, @"^\s*(?:re|回复|答复|fwd|转发)\s*[:：]\s*", "", RegexOptions.IgnoreCase);
         return Regex.Replace(s, @"\s+", " ").Trim();
+    }
+
+    /// <summary>主题基础部分：在归一化基础上再去掉工单号标记（如 [## 13801919 ##] / [###T2026-001###]）。
+    /// 客服回复（带工单号）去掉 Re: 前缀与工单号标记后即回到原始报障主题。</summary>
+    private static string BaseSubject(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        var norm = NormalizeSubject(s);
+        // 工单号标记：以 # 包裹、内容为字母数字连字符（如 [## 13801919 ##]）；产品/客户中括号不含 #，不会被误删
+        norm = Regex.Replace(norm, @"\[#{1,3}\s*[A-Za-z0-9\-]+\s*#{1,3}\]", "", RegexOptions.IgnoreCase);
+        return Regex.Replace(norm, @"\s+", " ").Trim();
     }
 
     private static string Majority(List<EmailMessage> emails, Func<EmailMessage, string> selector)

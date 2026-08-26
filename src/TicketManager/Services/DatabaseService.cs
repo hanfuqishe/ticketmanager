@@ -209,6 +209,12 @@ public class DatabaseService : IDisposable
             existing = conn.ExecuteScalar<long?>(
                 "SELECT Id FROM Emails WHERE Folder = @Folder AND ZohoMessageId = @zid LIMIT 1",
                 new { e.Folder, zid = e.ZohoMessageId });
+        // 同一封邮件在 Zoho 中可能出现两个不同 ZohoMessageId（同步伪影）：MessageId/Uid 为空、ZohoMessageId 又不一致时，
+        // 用 (Folder, ContentHash, DateSent) 兜底去重（ContentHash=正文哈希，DateSent 精确到毫秒，基本不会误合并）
+        if (existing == null && !string.IsNullOrEmpty(e.ContentHash))
+            existing = conn.ExecuteScalar<long?>(
+                "SELECT Id FROM Emails WHERE Folder = @Folder AND ContentHash = @hash AND DateSent = @ds LIMIT 1",
+                new { e.Folder, hash = e.ContentHash, ds = e.DateSent.ToString("o") });
 
         var p = new
         {
@@ -225,7 +231,8 @@ public class DatabaseService : IDisposable
         {
             conn.Execute("""
                 UPDATE Emails SET Folder=@Folder, Uid=@Uid, MessageId=@MessageId, InReplyTo=@InReplyTo,
-                    "References"=@References, ZohoMessageId=@ZohoMessageId, ZohoThreadId=@ZohoThreadId,
+                    "References"=@References, ZohoMessageId=@ZohoMessageId,
+                    ZohoThreadId = CASE WHEN @ZohoThreadId > 0 THEN @ZohoThreadId ELSE ZohoThreadId END,
                     FromAddress=@FromAddress, FromName=@FromName,
                     ToAddresses=@ToAddresses, CcAddresses=@CcAddresses, Subject=@Subject, AiTitle=@AiTitle,
                     DateSent=@DateSent, DateReceived=@DateReceived, BodyText=@BodyText, ContentHash=@ContentHash,

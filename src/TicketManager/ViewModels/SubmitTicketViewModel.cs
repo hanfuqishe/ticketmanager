@@ -21,6 +21,9 @@ public class SubmitTicketViewModel : ViewModelBase
     public List<string> Customers { get; }
     public ObservableCollection<string> Contacts { get; } = new();
 
+    /// <summary>抄送候选：我方同事（设置→我方域名），选中后自动追加到抄送栏。</summary>
+    public List<string> ColleagueCcOptions { get; }
+
     /// <summary>可选签名名（在“设置→签名”中维护）。</summary>
     public List<string> SignatureNames { get; }
 
@@ -142,6 +145,7 @@ public class SubmitTicketViewModel : ViewModelBase
         SelectedRecipient = SupportRecipients.FirstOrDefault() ?? "";
         SelectedProduct = Products.FirstOrDefault() ?? "";
         Customer = Customers.FirstOrDefault() ?? "";
+        ColleagueCcOptions = workflow.FormatRecipients(workflow.GetColleagueContacts());
         LoadContacts();
         _signatures = workflow.LoadSignatures();
         SignatureNames = _signatures.Select(s => s.Name).ToList();

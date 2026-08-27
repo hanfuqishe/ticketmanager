@@ -25,18 +25,35 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <TextBlock Grid.Row="0" Grid.Column="0" Text="首次同步：" VerticalAlignment="Center"/>
-                    <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Margin="8,4">
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="同步方式：" VerticalAlignment="Center"/>
+                    <StackPanel Grid.Row="0" Grid.Column="1" Margin="8,4">
+                        <ComboBox ItemsSource="{Binding SyncModes}" SelectedItem="{Binding SelectedSyncMode}" Padding="2"/>
+                        <TextBlock Text="自动：配了 Zoho REST 则用 Zoho，否则用 IMAP；也可强制指定其中一种" Foreground="#888" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="首次同步：" VerticalAlignment="Center"/>
+                    <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Margin="8,4">
                         <TextBox Text="{Binding Config.FirstSyncDays}" Width="90" Padding="4" VerticalAlignment="Center"/>
                         <TextBlock Text="天内的邮件" VerticalAlignment="Center" Margin="8,0,0,0"/>
                         <CheckBox Content="自动收取新邮件" IsChecked="{Binding Config.EnableAutoSync}" VerticalAlignment="Center" Margin="24,0,0,0"/>
                     </StackPanel>
 
-                    <TextBlock Grid.Row="1" Grid.Column="0" Text="数据文件：" VerticalAlignment="Top" Margin="0,6,0,0"/>
-                    <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding DbPath, Mode=OneWay}" IsReadOnly="True" Margin="8,4" Padding="4" Foreground="Gray"/>
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="下载并发：" VerticalAlignment="Top" Margin="0,8,0,0"/>
+                    <StackPanel Grid.Row="2" Grid.Column="1" Margin="8,4">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBox Text="{Binding Config.SyncConcurrency}" Width="90" Padding="4" VerticalAlignment="Center"/>
+                            <TextBlock Text="（1~10，默认 5）" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#888"/>
+                        </StackPanel>
+                        <TextBlock Text="⚠ 并发下载会同时建立多条连接，数值过大可能触发邮箱服务器的限流甚至封禁，请谨慎设置。" Foreground="#C62828" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="3" Grid.Column="0" Text="数据文件：" VerticalAlignment="Top" Margin="0,6,0,0"/>
+                    <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding DbPath, Mode=OneWay}" IsReadOnly="True" Margin="8,4" Padding="4" Foreground="Gray"/>
                 </Grid>
             </TabItem>
 
@@ -144,8 +161,8 @@
                 </Grid>
             </TabItem>
 
-            <!-- ===== DeepSeek ===== -->
-            <TabItem Header="DeepSeek AI">
+            <!-- ===== 主流 AI（OpenAI 兼容接口） ===== -->
+            <TabItem Header="AI 设置">
                 <Grid Margin="16">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
@@ -154,67 +171,91 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <TextBlock Grid.Row="0" Grid.Column="0" Text="API Key：" VerticalAlignment="Center"/>
-                    <PasswordBox x:Name="DeepSeekKeyBox" Grid.Row="0" Grid.Column="1" Margin="8,4" Padding="4"/>
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="AI 提供商：" VerticalAlignment="Center"/>
+                    <StackPanel Grid.Row="0" Grid.Column="1" Margin="8,4">
+                        <ComboBox ItemsSource="{Binding AiProviders}" DisplayMemberPath="Name"
+                                  SelectedItem="{Binding SelectedAiProvider}" Padding="2"/>
+                        <TextBlock Text="选择提供商自动填入接口地址与模型（可手动修改）；「自定义」保留当前填写"
+                                   Foreground="#888" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                    </StackPanel>
 
-                    <TextBlock Grid.Row="1" Grid.Column="0" Text="接口地址：" VerticalAlignment="Center"/>
-                    <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Config.DeepSeekBaseUrl}" Margin="8,4" Padding="4"/>
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="API Key：" VerticalAlignment="Center"/>
+                    <PasswordBox x:Name="DeepSeekKeyBox" Grid.Row="1" Grid.Column="1" Margin="8,4" Padding="4"
+                                 ToolTip="所选 AI 提供商的 API Key（在对应开放平台创建）"/>
 
-                    <TextBlock Grid.Row="2" Grid.Column="0" Text="模型：" VerticalAlignment="Center"/>
-                    <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Config.DeepSeekModel}" Margin="8,4" Padding="4"/>
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="接口地址：" VerticalAlignment="Center"/>
+                    <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Config.DeepSeekBaseUrl}" Margin="8,4" Padding="4"/>
 
-                    <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="8,6">
+                    <TextBlock Grid.Row="3" Grid.Column="0" Text="模型：" VerticalAlignment="Center"/>
+                    <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding Config.DeepSeekModel}" Margin="8,4" Padding="4"/>
+
+                    <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Margin="8,6">
                         <CheckBox Content="为每封邮件生成一句话标题" IsChecked="{Binding Config.EnableAiTitle}" Margin="0,0,20,0"/>
                         <CheckBox Content="为工单智能总结状态" IsChecked="{Binding Config.EnableAiStatus}" Margin="0,0,20,0"/>
                         <CheckBox Content="主题未标注时用 AI 分析产品/客户" IsChecked="{Binding Config.EnableAiMeta}"/>
                     </StackPanel>
 
-                    <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Margin="8,6">
+                    <StackPanel Grid.Row="5" Grid.Column="1" Orientation="Horizontal" Margin="8,6">
                         <TextBlock Text="单封邮件发送给 AI 的最大字符数：" VerticalAlignment="Center"/>
                         <TextBox Text="{Binding Config.MaxBodyChars}" Width="90" Padding="4" Margin="8,0,0,0" VerticalAlignment="Center"/>
                         <TextBlock Text="（超长正文截断后再发送，避免超出上下文限制）" Foreground="#888" FontSize="11" VerticalAlignment="Center" Margin="8,0,0,0"/>
                     </StackPanel>
 
-                    <!-- 分步骤获取 API Key 说明（含可点击链接） -->
-                    <ScrollViewer Grid.Row="5" Grid.ColumnSpan="2" VerticalScrollBarVisibility="Auto" Margin="0,14,0,0">
+                    <!-- 通用说明 + 主流提供商一览 -->
+                    <ScrollViewer Grid.Row="6" Grid.ColumnSpan="2" VerticalScrollBarVisibility="Auto" Margin="0,14,0,0">
                         <Border BorderBrush="#dce6f0" BorderThickness="1" CornerRadius="6" Padding="14" Background="#f8fafc">
                             <StackPanel>
                                 <StackPanel Orientation="Horizontal">
                                     <Path Data="{StaticResource IconDoc}" Fill="#009688" Width="16" Height="16" Stretch="Uniform" VerticalAlignment="Center"/>
-                                    <TextBlock Text="如何获取 API Key（蓝色文字可点击打开）" FontWeight="Bold" FontSize="14" Foreground="#1f3a5f" Margin="6,0,0,0"/>
+                                    <TextBlock Text="如何配置 AI（支持主流 OpenAI 兼容提供商）" FontWeight="Bold" FontSize="14" Foreground="#1f3a5f" Margin="6,0,0,0"/>
                                 </StackPanel>
 
                                 <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,12,0,0">
-                                    <Run Text="① 注册 / 登录 DeepSeek 开放平台：　"/>
-                                    <Hyperlink NavigateUri="https://platform.deepseek.com/" RequestNavigate="Link_RequestNavigate">platform.deepseek.com（点此打开）</Hyperlink>
+                                    ① 在上方选择「AI 提供商」，接口地址与默认模型会自动填入（可手动修改）；② 到该提供商的开放平台创建 API Key 填入「API Key」；③ 点击「保存」。程序内置的标题/状态总结/AI 分析/翻译都会调用所选 AI。
                                 </TextBlock>
 
-                                <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,6,0,0">
-                                    <Run Text="② 进入 API Keys 页面：　"/>
-                                    <Hyperlink NavigateUri="https://platform.deepseek.com/api_keys" RequestNavigate="Link_RequestNavigate">API Keys（点此打开）</Hyperlink>
-                                    <Run Text="　→ 点击「创建 API Key」→ 起个名字 → 创建。"/>
-                                </TextBlock>
-
-                                <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,6,0,0">
-                                    <Run Text="③ 创建后立即复制生成的 Key（以 "/><Run Text="sk-"/><Run Text=" 开头），它只显示一次，请妥善保存。"/>
-                                </TextBlock>
-
-                                <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,6,0,0">
-                                    <Run Text="④ 确保账户有余额：DeepSeek 按用量计费，需先充值才能调用。可在　"/>
-                                    <Hyperlink NavigateUri="https://platform.deepseek.com/usage" RequestNavigate="Link_RequestNavigate">用量与充值（点此打开）</Hyperlink>
-                                    <Run Text="　页面查看。"/>
-                                </TextBlock>
-
-                                <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,6,0,0">
-                                    <Run Text="⑤ 把 Key 填入本页上方「API Key」后点击「保存」。接口地址与模型保持默认即可。"/>
-                                </TextBlock>
+                                <TextBlock Text="主流提供商一览（均为 OpenAI 兼容接口）：" FontWeight="SemiBold" Margin="0,14,0,0"/>
+                                <Grid Margin="0,6,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="150"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="230"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="提供商" FontWeight="Bold" Foreground="#1f3a5f" FontSize="11"/>
+                                    <TextBlock Grid.Row="0" Grid.Column="1" Text="开放平台" FontWeight="Bold" Foreground="#1f3a5f" FontSize="11"/>
+                                    <TextBlock Grid.Row="0" Grid.Column="2" Text="默认模型" FontWeight="Bold" Foreground="#1f3a5f" FontSize="11"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="DeepSeek" FontSize="11"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="1" Text="platform.deepseek.com" FontSize="11"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="2" Text="deepseek-chat" FontSize="11"/>
+                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="OpenAI" FontSize="11"/>
+                                    <TextBlock Grid.Row="2" Grid.Column="1" Text="platform.openai.com" FontSize="11"/>
+                                    <TextBlock Grid.Row="2" Grid.Column="2" Text="gpt-4o-mini" FontSize="11"/>
+                                    <TextBlock Grid.Row="3" Grid.Column="0" Text="通义千问（阿里云）" FontSize="11"/>
+                                    <TextBlock Grid.Row="3" Grid.Column="1" Text="bailian.aliyun.com" FontSize="11"/>
+                                    <TextBlock Grid.Row="3" Grid.Column="2" Text="qwen-plus" FontSize="11"/>
+                                    <TextBlock Grid.Row="4" Grid.Column="0" Text="Kimi（月之暗面）" FontSize="11"/>
+                                    <TextBlock Grid.Row="4" Grid.Column="1" Text="platform.moonshot.cn" FontSize="11"/>
+                                    <TextBlock Grid.Row="4" Grid.Column="2" Text="moonshot-v1-8k" FontSize="11"/>
+                                    <TextBlock Grid.Row="5" Grid.Column="0" Text="智谱 GLM" FontSize="11"/>
+                                    <TextBlock Grid.Row="5" Grid.Column="1" Text="open.bigmodel.cn" FontSize="11"/>
+                                    <TextBlock Grid.Row="5" Grid.Column="2" Text="glm-4-flash" FontSize="11"/>
+                                    <TextBlock Grid.Row="6" Grid.Column="0" Text="豆包（火山方舟）" FontSize="11"/>
+                                    <TextBlock Grid.Row="6" Grid.Column="1" Text="console.volcengine.com/ark" FontSize="11"/>
+                                    <TextBlock Grid.Row="6" Grid.Column="2" Text="doubao-seed-1-6-250615" FontSize="11"/>
+                                </Grid>
 
                                 <TextBlock TextWrapping="Wrap" LineHeight="20" Margin="0,12,0,0" Foreground="#888" FontSize="11">
-                                    <Run Text="安全提示：API Key 属敏感信息，程序会用 Windows DPAPI 加密存储，请勿提交到代码仓库。"/>
+                                    安全提示：API Key 属敏感信息，程序会用 Windows DPAPI 加密存储，请勿提交到代码仓库。
                                 </TextBlock>
                             </StackPanel>
                         </Border>
@@ -232,6 +273,8 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
@@ -248,8 +291,15 @@
                     <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding Config.ProxyPort}" Margin="8,4" Padding="4" Width="120" HorizontalAlignment="Left"/>
 
                     <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Margin="8,8">
-                        <CheckBox Content="用于 DeepSeek 接口" IsChecked="{Binding Config.ProxyForDeepSeek}" Margin="0,0,20,0"/>
-                        <CheckBox Content="用于 Zoho REST API" IsChecked="{Binding Config.ProxyForZoho}"/>
+                        <CheckBox Content="用于 AI 接口" IsChecked="{Binding Config.ProxyForDeepSeek}" Margin="0,0,20,0"/>
+                        <CheckBox Content="用于 Zoho REST API" IsChecked="{Binding Config.ProxyForZoho}" Margin="0,0,20,0"/>
+                        <CheckBox Content="用于 IMAP" IsChecked="{Binding Config.ProxyForImap}"/>
+                    </StackPanel>
+
+                    <StackPanel Grid.Row="5" Grid.Column="1" Orientation="Horizontal" Margin="8,8">
+                        <Button Content="测试连接" Padding="16,4" Click="TestProxy_Click"/>
+                        <TextBlock x:Name="ProxyTestText" VerticalAlignment="Center" Margin="12,0,0,0"
+                                   TextWrapping="Wrap" MaxWidth="460" Foreground="#333"/>
                     </StackPanel>
                 </Grid>
             </TabItem>
@@ -344,6 +394,71 @@
 
                                 <TextBlock TextWrapping="Wrap" LineHeight="20" Margin="0,14,0,0" Foreground="#888" FontSize="11">
                                     <Run Text="安全提示：Client ID / Secret / Refresh Token 属敏感信息，程序会用 Windows DPAPI 加密存储，请勿提交到代码仓库。"/>
+                                </TextBlock>
+                            </StackPanel>
+                        </Border>
+                    </ScrollViewer>
+                </Grid>
+            </TabItem>
+
+            <!-- ===== IMAP（任选/备用同步方式） ===== -->
+            <TabItem Header="IMAP">
+                <Grid Margin="16">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <StackPanel Grid.Row="0">
+                        <StackPanel Orientation="Horizontal" Margin="0,4">
+                            <TextBlock Text="服务器：" Width="110" VerticalAlignment="Center"/>
+                            <TextBox Text="{Binding Config.ImapHost}" Width="280" Padding="4"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,4">
+                            <TextBlock Text="端口：" Width="110" VerticalAlignment="Center"/>
+                            <TextBox Text="{Binding Config.ImapPort}" Width="120" Padding="4"/>
+                            <CheckBox Content="使用 SSL" IsChecked="{Binding Config.ImapUseSsl}" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,4">
+                            <TextBlock Text="账号：" Width="110" VerticalAlignment="Center"/>
+                            <TextBox Text="{Binding Config.ImapUsername}" Width="280" Padding="4"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,4">
+                            <TextBlock Text="密码/授权码：" Width="110" VerticalAlignment="Center"/>
+                            <PasswordBox x:Name="ImapPasswordBox" Width="280" Padding="4"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,4">
+                            <TextBlock Text="收件箱：" Width="110" VerticalAlignment="Center"/>
+                            <TextBox Text="{Binding Config.ImapFolder}" Width="280" Padding="4"/>
+                            <TextBlock Text="如 INBOX" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="Gray" FontSize="11"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,4">
+                            <TextBlock Text="发件箱：" Width="110" VerticalAlignment="Center"/>
+                            <TextBox Text="{Binding Config.ImapSentFolder}" Width="280" Padding="4"/>
+                            <TextBlock Text="留空自动识别" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="Gray" FontSize="11"/>
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                            <Button Content="测试连接" Padding="16,4" Click="TestImap_Click"/>
+                            <TextBlock x:Name="ImapTestText" VerticalAlignment="Center" Margin="12,0,0,0"
+                                       TextWrapping="Wrap" MaxWidth="440" Foreground="#333"/>
+                        </StackPanel>
+                        <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="110,10,0,0">
+                            注：Zoho Mail 已封禁普通 IMAP 登录；若你的邮箱被限制，请在「同步设置」选择「Zoho REST API」。其他支持 IMAP 的邮箱可用此方式。
+                        </TextBlock>
+                    </StackPanel>
+
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,14,0,0">
+                        <Border BorderBrush="#dce6f0" BorderThickness="1" CornerRadius="6" Padding="14" Background="#f8fafc">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal">
+                                    <Path Data="{StaticResource IconDoc}" Fill="#009688" Width="16" Height="16" Stretch="Uniform" VerticalAlignment="Center"/>
+                                    <TextBlock Text="IMAP 说明" FontWeight="Bold" FontSize="14" Foreground="#1f3a5f" Margin="6,0,0,0"/>
+                                </StackPanel>
+                                <TextBlock TextWrapping="Wrap" LineHeight="21" Margin="0,12,0,0">
+                                    IMAP 是直接登录邮箱服务器同步，无需申请 API 凭据。填写 服务器/端口/账号/密码 后，在「同步设置」把「同步方式」选为 IMAP 即可。Zoho Mail 出于安全已封禁普通 IMAP 密码登录，若你的 Zoho 邮箱无法用 IMAP 连接，请改用「Zoho REST API」方式。
+                                </TextBlock>
+                                <TextBlock TextWrapping="Wrap" LineHeight="20" Margin="0,12,0,0" Foreground="#888" FontSize="11">
+                                    安全提示：邮箱密码属敏感信息，程序会用 Windows DPAPI 加密存储，请勿提交到代码仓库。
                                 </TextBlock>
                             </StackPanel>
                         </Border>

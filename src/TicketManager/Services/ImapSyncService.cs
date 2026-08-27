@@ -19,62 +19,123 @@ public class ImapSyncService
 
     public ImapSyncService(AppConfig config) => _config = config;
 
+    /// <summary>测试 IMAP 连接：连接服务器→认证→打开收件箱。返回 (成功, 信息)。</summary>
+    public async Task<(bool Ok, string Message)> TestConnectionAsync()
+    {
+        try
+        {
+            using var client = new ImapClient();
+            client.ProxyClient = CreateProxy();
+            var socketOptions = _config.ImapUseSsl ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.Auto;
+            await client.ConnectAsync(_config.ImapHost, _config.ImapPort, socketOptions);
+            await client.AuthenticateAsync(_config.ImapUsername, _config.ImapPassword);
+            var folder = await client.GetFolderAsync(string.IsNullOrEmpty(_config.ImapFolder) ? "INBOX" : _config.ImapFolder);
+            await folder.OpenAsync(FolderAccess.ReadOnly);
+            await client.DisconnectAsync(true);
+            return (true, $"✅ 连接成功：已认证并打开收件箱 {folder.Name}（认证机制 {client.AuthenticationMechanisms.Count} 种）");
+        }
+        catch (AuthenticationException)
+        {
+            return (false, "❌ 认证失败：账号或密码不正确（部分邮箱需用“授权码”而非登录密码）。");
+        }
+        catch (Exception ex)
+        {
+            return (false, $"❌ 测试失败：{ex.Message}");
+        }
+    }
+
     /// <summary>
-    /// 同步指定文件夹。lastUid=0 表示首次同步：拉取最近 FirstSyncDays 天；
-    /// 否则增量拉取 lastUid 之后的新邮件。
-    /// 提供 onMonitoredEmail 回调时，命中“关注客服邮箱”的邮件会实时交给回调处理（便于逐封落库），
-    /// 否则收集到返回列表中。onUidProcessed 每处理完一个 UID 即回调，便于实时推进同步游标。
-    /// skipIfExists 提供“某 UID 是否已在本地”的判定时，已存在的邮件直接跳过、不再重复下载。
+    /// 同步指定文件夹。lastUid=0 表示首次同步：拉取最近 FirstSyncDays 天；否则增量拉取 lastUid 之后的新邮件。
+    /// 两阶段：先单连接扫描 UID 列表，再 N 路并发下载（每条连接负责一段 UID，N=并发设置，与 Zoho REST 下载并发一致）；
+    /// 命中“关注客服邮箱”的邮件交给 onMonitoredEmail 回调（落库用写锁串行化，避免 SQLite 竞争），
+    /// 否则收集到返回列表中。skipIfExists 提供“某 UID 是否已在本地”的判定时，已存在的邮件直接跳过。
+    /// 并发下游标无法逐 UID 单调推进，改为同步结束时一次性推进到本次最大 UID（onUidProcessed 在结尾以 maxUid 回调一次）。
     /// </summary>
     public async Task<SyncResult> SyncAsync(
         string folderName, uint lastUid,
         Func<EmailMessage, Task>? onMonitoredEmail = null,
         Action<uint>? onUidProcessed = null,
         Func<uint, bool>? skipIfExists = null,
-        IProgress<string>? progress = null)
+        IProgress<string>? progress = null,
+        CancellationToken ct = default)
     {
-        using var client = new ImapClient();
-        client.ProxyClient = CreateProxy();
-
         var socketOptions = _config.ImapUseSsl ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.Auto;
-        await client.ConnectAsync(_config.ImapHost, _config.ImapPort, socketOptions);
-        await client.AuthenticateAsync(_config.ImapUsername, _config.ImapPassword);
-
-        var folder = await client.GetFolderAsync(folderName);
-        await folder.OpenAsync(FolderAccess.ReadOnly);
-
         SearchQuery query = lastUid > 0
             ? SearchQuery.Uids(new UniqueIdRange(new UniqueId(lastUid + 1), UniqueId.MaxValue))
-            : SearchQuery.And(
-                SearchQuery.NotDeleted,
-                SearchQuery.SentSince(DateTime.Now.AddDays(-_config.FirstSyncDays)));
+            : SearchQuery.And(SearchQuery.NotDeleted, SearchQuery.SentSince(DateTime.Now.AddDays(-_config.FirstSyncDays)));
 
-        var uids = await folder.SearchAsync(query);
-
-        var emails = new List<EmailMessage>();
-        uint maxUid = lastUid;
-        int i = 0, total = uids.Count;
-        foreach (var uid in uids)
+        // ---- 阶段1：单连接扫描，拿到 UID 列表 ----
+        UniqueId[] uids;
+        using (var scout = new ImapClient())
         {
-            // 本地已存在该邮件（同文件夹+UID）→ 跳过，不再重复下载
-            if (skipIfExists?.Invoke(uid.Id) != true)
-            {
-                var msg = await folder.GetMessageAsync(uid);
-                var email = ToEmailMessage(uid, folderName, msg);
-                if (email != null && IsMonitored(email))
-                {
-                    if (onMonitoredEmail != null) await onMonitoredEmail(email);
-                    else emails.Add(email);
-                }
-            }
-            if (uid.Id > maxUid) maxUid = uid.Id;
-            onUidProcessed?.Invoke(uid.Id);
-            i++;
-            progress?.Report($"正在同步[{folderName}]… {i}/{total}");
+            scout.ProxyClient = CreateProxy();
+            await scout.ConnectAsync(_config.ImapHost, _config.ImapPort, socketOptions, ct);
+            await scout.AuthenticateAsync(_config.ImapUsername, _config.ImapPassword, ct);
+            var folder = await scout.GetFolderAsync(folderName, ct);
+            await folder.OpenAsync(FolderAccess.ReadOnly, ct);
+            uids = (await folder.SearchAsync(query, ct)).ToArray();
+            await scout.DisconnectAsync(true, ct);
         }
+        int total = uids.Length;
+        if (total == 0) return new SyncResult(new List<EmailMessage>(), lastUid);
 
-        await client.DisconnectAsync(true);
-        return new SyncResult(emails, maxUid);
+        // ---- 阶段2：N 路并发下载（每条连接负责一段 UID）；落库回调用写锁串行化 ----
+        int concurrency = Math.Clamp(_config.SyncConcurrency, 1, 10);
+        using var writeLock = new SemaphoreSlim(1, 1);
+        var collected = new List<EmailMessage>();
+        var maxUid = lastUid;
+        var maxUidLock = new object();
+        int done = 0;
+        await Parallel.ForEachAsync(
+            SplitIntoChunks(uids, concurrency),
+            new ParallelOptions { MaxDegreeOfParallelism = concurrency, CancellationToken = ct },
+            async (chunk, ct2) =>
+            {
+                using var client = new ImapClient();
+                client.ProxyClient = CreateProxy();
+                await client.ConnectAsync(_config.ImapHost, _config.ImapPort, socketOptions, ct2);
+                await client.AuthenticateAsync(_config.ImapUsername, _config.ImapPassword, ct2);
+                var folder = await client.GetFolderAsync(folderName, ct2);
+                await folder.OpenAsync(FolderAccess.ReadOnly, ct2);
+                uint chunkMax = 0;
+                foreach (var uid in chunk)
+                {
+                    ct2.ThrowIfCancellationRequested();
+                    // 本地已存在该邮件（同文件夹+UID）→ 跳过，不再重复下载
+                    if (skipIfExists?.Invoke(uid.Id) != true)
+                    {
+                        var msg = await folder.GetMessageAsync(uid, ct2);
+                        var email = ToEmailMessage(uid, folderName, msg);
+                        if (email != null && IsMonitored(email))
+                        {
+                            if (onMonitoredEmail != null)
+                            {
+                                await writeLock.WaitAsync(ct2);
+                                try { await onMonitoredEmail(email); }
+                                finally { writeLock.Release(); }
+                            }
+                            else lock (collected) collected.Add(email);
+                        }
+                    }
+                    if (uid.Id > chunkMax) chunkMax = uid.Id;
+                    var d = Interlocked.Increment(ref done);
+                    progress?.Report($"正在同步[{folderName}]… {d}/{total}");
+                }
+                lock (maxUidLock) if (chunkMax > maxUid) maxUid = chunkMax;
+            });
+
+        // 游标在结束时一次性推进到本次最大 UID（并发下无法逐 UID 单调推进）
+        onUidProcessed?.Invoke(maxUid);
+        return new SyncResult(collected, maxUid);
+    }
+
+    /// <summary>把 UID 数组尽量均匀地分成 n 段（并发下载每段一条连接）。</summary>
+    private static IEnumerable<UniqueId[]> SplitIntoChunks(UniqueId[] items, int n)
+    {
+        if (items.Length == 0) yield break;
+        int size = Math.Max(1, (int)Math.Ceiling(items.Length / (double)n));
+        for (int i = 0; i < items.Length; i += size)
+            yield return items[i..Math.Min(i + size, items.Length)];
     }
 
     /// <summary>

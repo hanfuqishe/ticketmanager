@@ -38,6 +38,7 @@ public class WorkflowService
             DeepSeekApiKey = CredentialService.Unprotect(_db.GetSetting("deepseek_key")),
             DeepSeekBaseUrl = StrOr(_db.GetSetting("deepseek_baseurl"), "https://api.deepseek.com"),
             DeepSeekModel = StrOr(_db.GetSetting("deepseek_model"), "deepseek-chat"),
+            AiProvider = StrOr(_db.GetSetting("ai_provider"), "DeepSeek"),
             EnableAiTitle = BoolOr(_db.GetSetting("ai_title"), true),
             EnableAiStatus = BoolOr(_db.GetSetting("ai_status"), true),
             EnableAiMeta = BoolOr(_db.GetSetting("ai_meta"), true),
@@ -62,7 +63,9 @@ public class WorkflowService
 
             FirstSyncDays = IntOr(_db.GetSetting("first_sync_days"), 365),
             MaxBodyChars = IntOr(_db.GetSetting("max_body_chars"), 6000),
+            SyncConcurrency = Math.Clamp(IntOr(_db.GetSetting("sync_concurrency"), 5), 1, 10),
             EnableAutoSync = BoolOr(_db.GetSetting("auto_sync"), true),
+            SyncMode = StrOr(_db.GetSetting("sync_mode"), "Auto"),
             AutoTrackSupportMailboxes = BoolOr(_db.GetSetting("auto_track_support"), true)
         };
         return _config;
@@ -75,6 +78,8 @@ public class WorkflowService
         // 会导致“关注邮箱变化→重置游标”永远不触发（新增关注邮箱后拉不到其历史邮件）。
         var oldMonitored = SplitList(_db.GetSetting("monitored_addresses"));
         var oldFirstSyncDays = IntOr(_db.GetSetting("first_sync_days"), 365);
+        // 并发数强制限制在 1~10（过大可能触发邮箱服务器限流/封禁）
+        c.SyncConcurrency = Math.Clamp(c.SyncConcurrency, 1, 10);
         _db.SetSetting("imap_host", c.ImapHost);
         _db.SetSetting("imap_port", c.ImapPort.ToString());
         _db.SetSetting("imap_ssl", c.ImapUseSsl.ToString());
@@ -89,6 +94,7 @@ public class WorkflowService
         _db.SetSetting("deepseek_key", CredentialService.Protect(c.DeepSeekApiKey));
         _db.SetSetting("deepseek_baseurl", c.DeepSeekBaseUrl);
         _db.SetSetting("deepseek_model", c.DeepSeekModel);
+        _db.SetSetting("ai_provider", c.AiProvider);
         _db.SetSetting("ai_title", c.EnableAiTitle.ToString());
         _db.SetSetting("ai_status", c.EnableAiStatus.ToString());
         _db.SetSetting("ai_meta", c.EnableAiMeta.ToString());
@@ -113,7 +119,9 @@ public class WorkflowService
 
         _db.SetSetting("first_sync_days", c.FirstSyncDays.ToString());
         _db.SetSetting("max_body_chars", c.MaxBodyChars.ToString());
+        _db.SetSetting("sync_concurrency", c.SyncConcurrency.ToString());
         _db.SetSetting("auto_sync", c.EnableAutoSync.ToString());
+        _db.SetSetting("sync_mode", c.SyncMode);
         _db.SetSetting("auto_track_support", c.AutoTrackSupportMailboxes.ToString());
         _config = c;
         // 关注的客服邮箱发生变化（新增/删除）→ 重置同步游标，下次同步重新拉取时间窗口内的邮件
@@ -180,6 +188,20 @@ public class WorkflowService
     // ================= 同步 + 处理 =================
 
     /// <summary>执行一次完整流程：同步 → 落库 → 重建线程 → AI 标题 → AI 状态。返回新增邮件数。串行化避免并发同步。</summary>
+    /// <summary>解析当前同步方式：Auto=有 Zoho 配置则 Zoho 否则 IMAP；Zoho/Imap=强制对应方式。</summary>
+    public string ResolveSyncMode()
+    {
+        switch (_config.SyncMode)
+        {
+            case "Zoho": return "Zoho";
+            case "Imap": return "Imap";
+            default:
+                bool zoho = !string.IsNullOrEmpty(_config.ZohoClientId) && !string.IsNullOrEmpty(_config.ZohoRefreshToken);
+                bool imap = !string.IsNullOrEmpty(_config.ImapHost) && !string.IsNullOrEmpty(_config.ImapUsername);
+                return zoho ? "Zoho" : (imap ? "Imap" : "Zoho");
+        }
+    }
+
     public async Task<int> SyncAndProcessAsync(IProgress<string>? progress, CancellationToken ct = default)
     {
         await _syncLock.WaitAsync(ct);
@@ -197,15 +219,15 @@ public class WorkflowService
     {
         LoadConfig();
 
-        // 1. 同步：优先 Zoho REST API（IMAP 被封锁后替代），否则退回 IMAP
-        bool useZoho = !string.IsNullOrEmpty(_config.ZohoClientId) &&
-                       !string.IsNullOrEmpty(_config.ZohoRefreshToken);
-        // 同步前检查：Zoho REST 与 IMAP 都未配置时直接提示，避免进入无意义的“同步状态”
-        bool useImap = !string.IsNullOrEmpty(_config.ImapHost) &&
-                       !string.IsNullOrEmpty(_config.ImapUsername);
-        if (!useZoho && !useImap)
-            throw new InvalidOperationException(
-                "尚未完成邮箱同步配置：请在“设置”中配置 Zoho REST API（Client ID / Client Secret / Refresh Token）或 IMAP。");
+        // 1. 同步：按“同步方式”选择（自动优先 Zoho REST，否则 IMAP）
+        var mode = ResolveSyncMode();
+        bool useZoho = mode == "Zoho";
+        bool useImap = mode == "Imap";
+        // 同步前检查：所选方式对应配置缺失时直接提示，避免进入无意义的“同步状态”
+        if (useZoho && (string.IsNullOrEmpty(_config.ZohoClientId) || string.IsNullOrEmpty(_config.ZohoRefreshToken)))
+            throw new InvalidOperationException("尚未完成邮箱同步配置：请在“设置”→“Zoho REST API”中配置 Client ID / Client Secret / Refresh Token。");
+        if (useImap && (string.IsNullOrEmpty(_config.ImapHost) || string.IsNullOrEmpty(_config.ImapUsername)))
+            throw new InvalidOperationException("尚未完成邮箱同步配置：请在“设置”→“IMAP”中配置服务器与账号。");
 
         int newCount = 0;
         progress?.Report(useZoho ? "正在通过 Zoho REST API 同步…" : "正在连接邮箱…");
@@ -309,7 +331,7 @@ public class WorkflowService
                 },
                 onUidProcessed: uid => _db.SetLastUid(folder, uid),
                 skipIfExists: uid => _db.EmailExistsByUid(folder, uid),
-                progress);
+                progress, ct);
             _db.SetLastUid(folder, result.MaxUid);
         }
         return newCount;
@@ -402,14 +424,14 @@ public class WorkflowService
             if (!stop) start += pageSize;
         }
 
-        // ---- 阶段 2：并发下载内容（5 路），写库串行化，报告准确进度 ----
+        // ---- 阶段 2：并发下载内容（N 路，N=并发设置），写库串行化，报告准确进度 ----
         int downloaded = 0;
         using var writeLock = new SemaphoreSlim(1, 1); // SQLite 写锁：下载可并行，入库排队
         try
         {
             await Parallel.ForEachAsync(toDownload, new ParallelOptions
             {
-                MaxDegreeOfParallelism = 5,
+                MaxDegreeOfParallelism = Math.Clamp(_config.SyncConcurrency, 1, 10),
                 CancellationToken = ct
             }, async (m, ct2) =>
             {
@@ -537,8 +559,7 @@ public class WorkflowService
     public async Task RunAutoSyncLoopAsync(Action<int>? onSynced, IProgress<string>? progress, CancellationToken ct)
     {
         // Zoho REST 模式：轮询（每 2 分钟自动同步一次，增量+断点续传，无新邮件时开销很小）
-        bool useZoho = !string.IsNullOrEmpty(_config.ZohoClientId) &&
-                       !string.IsNullOrEmpty(_config.ZohoRefreshToken);
+        bool useZoho = ResolveSyncMode() == "Zoho";
         if (useZoho)
         {
             while (!ct.IsCancellationRequested)

@@ -20,6 +20,7 @@ public partial class SettingsWindow : Window
         _vm = new SettingsViewModel(workflow);
         DataContext = _vm;
         DeepSeekKeyBox.Password = _vm.Config.DeepSeekApiKey;
+        ImapPasswordBox.Password = _vm.Config.ImapPassword;
         ZohoClientIdBox.Password = _vm.Config.ZohoClientId;
         ZohoClientSecretBox.Password = _vm.Config.ZohoClientSecret;
         ZohoRefreshTokenBox.Password = _vm.Config.ZohoRefreshToken;
@@ -33,13 +34,15 @@ public partial class SettingsWindow : Window
         base.OnClosed(e);
     }
 
-    /// <summary>把「Zoho REST API」与「DeepSeek AI」两个设置页移到最前。</summary>
+    /// <summary>把「同步设置」「Zoho REST API」「IMAP」三个同步相关设置页移到最前（依次第 1/2/3）。</summary>
     private void ReorderTabs()
     {
+        var sync = FindTab("同步设置");
         var zoho = FindTab("Zoho REST API");
-        var deepseek = FindTab("DeepSeek AI");
-        if (zoho != null) { MainTab.Items.Remove(zoho); MainTab.Items.Insert(0, zoho); }
-        if (deepseek != null) { MainTab.Items.Remove(deepseek); MainTab.Items.Insert(1, deepseek); }
+        var imap = FindTab("IMAP");
+        if (sync != null) { MainTab.Items.Remove(sync); MainTab.Items.Insert(0, sync); }
+        if (zoho != null) { MainTab.Items.Remove(zoho); MainTab.Items.Insert(1, zoho); }
+        if (imap != null) { MainTab.Items.Remove(imap); MainTab.Items.Insert(2, imap); }
     }
 
     private TabItem? FindTab(string header)
@@ -53,6 +56,7 @@ public partial class SettingsWindow : Window
     private void Save_Click(object sender, RoutedEventArgs e)
     {
         _vm.Config.DeepSeekApiKey = DeepSeekKeyBox.Password;
+        _vm.Config.ImapPassword = ImapPasswordBox.Password;
         _vm.Config.ZohoClientId = ZohoClientIdBox.Password;
         _vm.Config.ZohoClientSecret = ZohoClientSecretBox.Password;
         _vm.Config.ZohoRefreshToken = ZohoRefreshTokenBox.Password;
@@ -89,6 +93,66 @@ public partial class SettingsWindow : Window
             MessageBox.Show(this, $"无法打开链接：{ex.Message}", "打开链接",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    /// <summary>测试当前代理能否连通外网（按所选代理类型经代理 TCP 连接到目标主机）。</summary>
+    private async void TestProxy_Click(object sender, RoutedEventArgs e)
+    {
+        var cfg = _vm.Config;
+        if (!cfg.UseProxy || string.IsNullOrWhiteSpace(cfg.ProxyHost))
+        {
+            ProxyTestText.Text = "请先勾选「启用代理」并填写 地址/端口。";
+            return;
+        }
+        MailKit.Net.Proxy.IProxyClient? proxy = cfg.ProxyType switch
+        {
+            "Socks4" => new MailKit.Net.Proxy.Socks4Client(cfg.ProxyHost, cfg.ProxyPort),
+            "Socks5" => new MailKit.Net.Proxy.Socks5Client(cfg.ProxyHost, cfg.ProxyPort),
+            "Http" => new MailKit.Net.Proxy.HttpProxyClient(cfg.ProxyHost, cfg.ProxyPort),
+            _ => null
+        };
+        if (proxy == null)
+        {
+            ProxyTestText.Text = "无法识别的代理类型。";
+            return;
+        }
+        const string targetHost = "www.gstatic.com";
+        const int targetPort = 443;
+        ProxyTestText.Text = $"正在测试代理 {cfg.ProxyType} {cfg.ProxyHost}:{cfg.ProxyPort} …";
+        try
+        {
+            using var socket = await proxy.ConnectAsync(targetHost, targetPort);
+            ProxyTestText.Text = $"✅ 代理连通正常：{cfg.ProxyType} {cfg.ProxyHost}:{cfg.ProxyPort} → {targetHost}:{targetPort}";
+        }
+        catch (Exception ex)
+        {
+            ProxyTestText.Text = $"❌ 代理连接失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>用当前输入框（可能未保存）的 IMAP 凭据测试连接。</summary>
+    private async void TestImap_Click(object sender, RoutedEventArgs e)
+    {
+        var cfg = _vm.Config;
+        var test = new AppConfig
+        {
+            ImapHost = cfg.ImapHost,
+            ImapPort = cfg.ImapPort,
+            ImapUseSsl = cfg.ImapUseSsl,
+            ImapUsername = cfg.ImapUsername,
+            ImapPassword = ImapPasswordBox.Password,
+            ImapFolder = cfg.ImapFolder,
+            ImapSentFolder = cfg.ImapSentFolder,
+            // 带上代理设置：IMAP 走代理（如开启）
+            UseProxy = cfg.UseProxy,
+            ProxyType = cfg.ProxyType,
+            ProxyHost = cfg.ProxyHost,
+            ProxyPort = cfg.ProxyPort,
+            ProxyForImap = cfg.ProxyForImap
+        };
+        ImapTestText.Text = "正在测试…";
+        var (_, msg) = await new Services.ImapSyncService(test).TestConnectionAsync();
+        ImapTestText.Text = msg;
     }
 
     /// <summary>用当前输入框（可能未保存）的凭据测试 Zoho REST API 连接。</summary>

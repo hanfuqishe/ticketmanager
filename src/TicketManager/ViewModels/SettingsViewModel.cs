@@ -24,6 +24,48 @@ public class SettingsViewModel : ViewModelBase
 
     public string[] ProxyTypes { get; } = { "Socks4", "Socks5", "Http" };
 
+    /// <summary>邮箱同步方式选项（显示值）。</summary>
+    public string[] SyncModes { get; } = { "自动（Zoho 优先，否则 IMAP）", "Zoho REST API", "IMAP" };
+
+    /// <summary>选中的同步方式（映射到 Config.SyncMode 的 Auto/Zoho/Imap）。</summary>
+    public string SelectedSyncMode
+    {
+        get => _config.SyncMode switch
+        {
+            "Zoho" => SyncModes[1],
+            "Imap" => SyncModes[2],
+            _ => SyncModes[0]
+        };
+        set
+        {
+            _config.SyncMode = value switch
+            {
+                _ when value == SyncModes[1] => "Zoho",
+                _ when value == SyncModes[2] => "Imap",
+                _ => "Auto"
+            };
+            OnPropertyChanged(nameof(SelectedSyncMode));
+        }
+    }
+
+    /// <summary>AI 提供商预设（OpenAI 兼容接口）。</summary>
+    public List<AiProviderInfo> AiProviders => AiProviderPresets.All;
+
+    /// <summary>选中的 AI 提供商：切换时自动填入接口地址与模型（可再手动改；「自定义」不改写）。</summary>
+    public AiProviderInfo SelectedAiProvider
+    {
+        get => AiProviders.FirstOrDefault(p => p.Name == _config.AiProvider) ?? AiProviders[0];
+        set
+        {
+            if (value == null || value.Name == _config.AiProvider) return;
+            _config.AiProvider = value.Name;
+            if (!string.IsNullOrEmpty(value.BaseUrl)) _config.DeepSeekBaseUrl = value.BaseUrl;
+            if (!string.IsNullOrEmpty(value.Model)) _config.DeepSeekModel = value.Model;
+            OnPropertyChanged(nameof(SelectedAiProvider));
+            OnPropertyChanged(nameof(Config));
+        }
+    }
+
     private int _selectedProxyIndex = 1;
     public int SelectedProxyIndex { get => _selectedProxyIndex; set => Set(ref _selectedProxyIndex, value); }
 

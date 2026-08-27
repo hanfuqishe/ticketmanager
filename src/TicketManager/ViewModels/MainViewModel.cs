@@ -564,14 +564,12 @@ public class MainViewModel : ViewModelBase
         return Regex.Replace(s, @"\n[^\S\r\n]*\n[^\S\r\n]*(?:\n[^\S\r\n]*)+", "\n\n");
     }
 
-    /// <summary>启动自动收取。REST 模式检查 Zoho 配置，否则检查 IMAP 配置；按当前配置决定是否开启。</summary>
+    /// <summary>启动自动收取。按所选同步方式（Zoho/IMAP）检查配置后开启。</summary>
     public void StartAutoSync()
     {
         StopAutoSync();
         if (!_workflow.Config.EnableAutoSync) return;
-        bool useZoho = !string.IsNullOrEmpty(_workflow.Config.ZohoClientId) &&
-                       !string.IsNullOrEmpty(_workflow.Config.ZohoRefreshToken);
-        if (useZoho)
+        if (_workflow.ResolveSyncMode() == "Zoho")
         {
             if (string.IsNullOrWhiteSpace(_workflow.Config.ZohoRefreshToken)) return;
         }
@@ -642,15 +640,18 @@ public class MainViewModel : ViewModelBase
         catch (OperationCanceledException) { }
     }
 
-    /// <summary>仅判断邮箱同步配置（Zoho REST 或 IMAP）是否齐全，不弹窗（供后台自动同步静默判断）。</summary>
+    /// <summary>仅判断所选同步方式（Zoho REST 或 IMAP）的配置是否齐全，不弹窗（供后台自动同步静默判断）。</summary>
     private bool HasSyncConfig()
     {
         var cfg = _workflow.Config;
-        return (!string.IsNullOrEmpty(cfg.ZohoClientId) && !string.IsNullOrEmpty(cfg.ZohoRefreshToken)) ||
-               (!string.IsNullOrEmpty(cfg.ImapHost) && !string.IsNullOrEmpty(cfg.ImapUsername));
+        return _workflow.ResolveSyncMode() switch
+        {
+            "Imap" => !string.IsNullOrEmpty(cfg.ImapHost) && !string.IsNullOrEmpty(cfg.ImapUsername),
+            _ => !string.IsNullOrEmpty(cfg.ZohoClientId) && !string.IsNullOrEmpty(cfg.ZohoRefreshToken)
+        };
     }
 
-    /// <summary>同步前检查邮箱同步配置（Zoho REST 或 IMAP 任一配置即可）。
+    /// <summary>同步前检查所选同步方式（Zoho REST 或 IMAP）的配置是否齐全。
     /// 未配置则弹窗提示并打开设置窗口，返回 false；已配置返回 true 继续同步。
     /// DeepSeek 缺失不阻止同步（可选功能），仅在状态栏提示。</summary>
     private bool EnsureSyncConfig()
@@ -658,18 +659,20 @@ public class MainViewModel : ViewModelBase
         // 设置窗口已打开（用户正在配置）→ 不做配置检查，避免在配置过程中再弹“是否打开设置”提示
         if (Views.SettingsWindow.IsOpen) return false;
         var cfg = _workflow.Config;
-        bool zoho = !string.IsNullOrEmpty(cfg.ZohoClientId) &&
-                    !string.IsNullOrEmpty(cfg.ZohoRefreshToken);
-        bool imap = !string.IsNullOrEmpty(cfg.ImapHost) &&
-                    !string.IsNullOrEmpty(cfg.ImapUsername);
-        if (zoho || imap)
+        var mode = _workflow.ResolveSyncMode();
+        bool ok = mode == "Imap"
+            ? (!string.IsNullOrEmpty(cfg.ImapHost) && !string.IsNullOrEmpty(cfg.ImapUsername))
+            : (!string.IsNullOrEmpty(cfg.ZohoClientId) && !string.IsNullOrEmpty(cfg.ZohoRefreshToken));
+        if (ok)
         {
             if (string.IsNullOrEmpty(cfg.DeepSeekApiKey))
                 StatusText = "提示：尚未配置 DeepSeek API，AI 总结/标题将不可用（可在设置中配置）";
             return true;
         }
 
-        var missing = "· 邮箱同步（Zoho REST API 或 IMAP）";
+        var missing = mode == "Imap"
+            ? "· IMAP（服务器 / 账号）"
+            : "· Zoho REST API（Client ID / Client Secret / Refresh Token）";
         if (string.IsNullOrEmpty(cfg.DeepSeekApiKey))
             missing += "\n· DeepSeek API（AI 总结，可选）";
         var msg = "以下配置尚未完成，无法同步邮件：\n\n" + missing +

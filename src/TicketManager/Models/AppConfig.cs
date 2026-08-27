@@ -21,10 +21,11 @@ public class AppConfig
     // ===== 域名→企业 映射（用于从抄送/收件人地址推断企业） =====
     public Dictionary<string, string> DomainEnterpriseMappings { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
-    // ===== DeepSeek =====
+    // ===== DeepSeek / 主流 AI（OpenAI 兼容接口） =====
     public string DeepSeekApiKey { get; set; } = "";
     public string DeepSeekBaseUrl { get; set; } = "https://api.deepseek.com";
     public string DeepSeekModel { get; set; } = "deepseek-chat";
+    public string AiProvider { get; set; } = "DeepSeek"; // 选中的 AI 提供商（设置页选择后自动填入接口地址与模型）
     public bool EnableAiTitle { get; set; } = true;
     public bool EnableAiStatus { get; set; } = true;
     public bool EnableAiMeta { get; set; } = true; // 主题未按约定标注产品/客户时，用 AI 分析补齐
@@ -53,6 +54,8 @@ public class AppConfig
     // ===== 其他 =====
     public int FirstSyncDays { get; set; } = 365;
     public int MaxBodyChars { get; set; } = 6000;
+    public int SyncConcurrency { get; set; } = 5; // 同步下载并发数（1~10，IMAP 与 Zoho REST 共用；过大可能被服务器限流/封禁）
     public bool EnableAutoSync { get; set; } = true; // 新邮件到达时自动收取（IMAP IDLE）
+    public string SyncMode { get; set; } = "Auto"; // Auto|Zoho|Imap：用户选择的邮箱同步方式（Auto=有 Zoho 则 Zoho 否则 IMAP）
     public bool AutoTrackSupportMailboxes { get; set; } = true; // 扫描时自动发现并关注 @前含support、@后含manageengine/zohocorp 的客服邮箱
 }

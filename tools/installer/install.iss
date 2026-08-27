@@ -1,6 +1,6 @@
 ; 工单邮件管理器 安装脚本（Inno Setup 6/7）
 #define MyAppName "工单邮件管理器"
-#define MyAppVersion "1.0.6"
+#define MyAppVersion "1.0.7"
 #define MyAppPublisher "TicketManager"
 #define MyAppExeName "TicketManager.exe"
 #define MyAppId "4F6C0E1A-2B3C-4D5E-8F90-123456789ABC"

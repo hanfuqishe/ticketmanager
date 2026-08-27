@@ -16,6 +16,9 @@ namespace TicketManager.Services;
 /// </summary>
 public class DeepSeekService : IDisposable
 {
+    /// <summary>日志上传确认通知邮箱：收到它说明我方刚把日志文件上传给研发，球在研发一侧（等待研发回复）。</summary>
+    private const string LogUploadNotifier = "bonitas@notification.zohocorpsite.com";
+
     private readonly AppConfig _config;
     private readonly HttpClient _http;
     private readonly SemaphoreSlim _gate = new(4, 4); // AI 并发上限（标题/状态/元数据分析并行用；太高易触发 DeepSeek 限流）
@@ -86,7 +89,9 @@ public class DeepSeekService : IDisposable
             "   - 最后是我方（[我]）发的（如替客户回答客服的提问、把客户需求转达给客服）→ 球已回到客服这边 → 「等待客服回复」或「处理中」，绝不能判「等待客户回复」。" +
             "② 「等待客户回复」的前提是对话中确实有客户在参与（存在 [客户] 角色的邮件）。" +
             "   若整个线索只有 [我] 和 [客服]、客户从未发过邮件——即使客服问了关于客户的问题，也应视为我方已替客户答复、等客服继续，用「等待客服回复」或「处理中」，不要用「等待客户回复」。" +
-            "③ 厂商客服一旦说过“会跟进/正在处理”，就用「处理中」，不要再写「等待客服回复」；绝不能把“客服在跟进”写成「等待客户回复」。";
+            "③ 厂商客服一旦说过“会跟进/正在处理”，就用「处理中」，不要再写「等待客服回复」；绝不能把“客服在跟进”写成「等待客户回复」。" +
+            "④ 特殊通知：标 [上传确认] 的邮件来自日志上传确认通知（bonitas@notification.zohocorpsite.com），说明我方刚把日志文件上传给研发。" +
+            "   若线索最后一封是它 → 球在研发一侧 → 用「等待研发回复」；若其后研发已回复，则按正常方向判断。";
 
         var userContent = new StringBuilder();
         userContent.AppendLine($"【工单号】{thread.TicketNumber}  产品：{thread.Product}  客户：{thread.Enterprise}");
@@ -117,16 +122,26 @@ public class DeepSeekService : IDisposable
             App.Log("DeepSeek.ParseStatus", new Exception("无法从响应解析出『状态：』行，原始响应: " + (resp.Length > 400 ? resp[..400] : resp)));
             return null;
         }
+
+        // 日志上传确认：若线索最后一封来自上传确认通知，说明刚把日志交给研发，球在研发一侧（硬性判定，不受 AI 波动影响）
+        var lastEmail = thread.Emails.OrderBy(e => e.DateSent).LastOrDefault();
+        if (lastEmail != null &&
+            string.Equals(lastEmail.FromAddress, LogUploadNotifier, StringComparison.OrdinalIgnoreCase))
+            status = "等待研发回复";
+
         return (status, string.IsNullOrEmpty(summary) ? resp.Trim() : summary);
     }
 
-    /// <summary>按发件人地址标注邮件方向：自己的邮箱或我方同事域名→[我]，关注客服邮箱→[客服]，否则→[客户]。</summary>
+    /// <summary>按发件人地址标注邮件方向：自己的邮箱或我方同事域名→[我]，关注客服邮箱→[客服]，日志上传确认→[上传确认]，否则→[客户]。</summary>
     private string DirectionLabel(string fromAddress)
     {
         if (string.IsNullOrEmpty(fromAddress)) return "[客户]";
         if (string.Equals(fromAddress, _config.ImapUsername, StringComparison.OrdinalIgnoreCase) ||
             IsMySupportDomain(fromAddress)) // 我方支持人员（同事）域名 → [我]
             return "[我]";
+        // 日志上传确认通知：我方上传日志给研发的确认，非客户也非客服
+        if (string.Equals(fromAddress, LogUploadNotifier, StringComparison.OrdinalIgnoreCase))
+            return "[上传确认]";
         // 厂商客服邮箱（support@manageengine/zohocorp）即使未被关注也算客服，避免被误标为客户
         if (_config.MonitoredAddresses.Any(m => string.Equals(fromAddress, m, StringComparison.OrdinalIgnoreCase)) ||
             IsSupportMailbox(fromAddress))
@@ -207,6 +222,17 @@ public class DeepSeekService : IDisposable
         const string systemPrompt =
             "你是一名专业的中英技术翻译。请把下面的英文邮件正文翻译成简体中文。" +
             "保留原文的分段与换行结构，不要添加任何解释、前缀或标注。只输出译文。";
+        var userContent = Truncate(text, _config.MaxBodyChars);
+        return await ChatAsync(systemPrompt, userContent, maxTokens: 1024);
+    }
+
+    /// <summary>把中文/混合文本翻译成英文（回复邮件用）。失败返回 null。</summary>
+    public async Task<string?> TranslateToEnglishAsync(string text)
+    {
+        if (!Configured || string.IsNullOrWhiteSpace(text)) return null;
+        const string systemPrompt =
+            "你是一名专业的中英技术翻译。请把下面的文本翻译成英文，用于回复技术支持邮件。" +
+            "保留分段与换行结构，语气专业礼貌，不要添加任何解释、前缀或标注。只输出译文。";
         var userContent = Truncate(text, _config.MaxBodyChars);
         return await ChatAsync(systemPrompt, userContent, maxTokens: 1024);
     }

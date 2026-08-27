@@ -36,6 +36,8 @@
         <StreamGeometry x:Key="IconSend">M2,21L23,12L2,3V10L17,12L2,14V21Z</StreamGeometry>
         <!-- 文档+加号：提新工单（新建文档） -->
         <StreamGeometry x:Key="IconDocNew">M14,2H6C4.9,2 4,2.9 4,4V20C4,21.1 4.9,22 6,22H18C19.1,22 20,21.1 20,20V8L14,2M13,9V3.5L18.5,9H13M13,16H11V18H9V16H7V14H9V12H11V14H13V16Z</StreamGeometry>
+        <!-- 回复箭头：回复此邮件 -->
+        <StreamGeometry x:Key="IconReply">M10,9V5L3,12L10,19V14.9C15,14.9 18.5,16.5 21,20C20,15 17,10 10,9Z</StreamGeometry>
         <StreamGeometry x:Key="IconStar">M12,17.27L18.18,21L16.54,13.97L22,9.24L14.81,8.62L12,2L9.19,8.62L2,9.24L7.45,13.97L5.82,21L12,17.27Z</StreamGeometry>
 
         <!-- 按键栏按钮：默认淡/透明背景，悬停淡灰、按下略深，选中（勾选）时浅蓝+蓝边才醒目 -->
@@ -304,11 +306,16 @@
         </HierarchicalDataTemplate>
 
         <HierarchicalDataTemplate DataType="{x:Type vm:EmailNodeViewModel}" ItemsSource="{Binding Children}">
-            <!-- Grid 铺满整行，右键在行内任意位置（含文字右侧空白）都可弹出菜单 -->
-            <Grid Margin="2,1" Background="Transparent" ContextMenuService.IsEnabled="{Binding IsRoot}">
+            <!-- Grid 铺满整行，右键在行内任意位置（含文字右侧空白）都可弹出菜单（每封邮件都可用；线索级项仅根显示） -->
+            <Grid Margin="2,1" Background="Transparent">
                 <Grid.ContextMenu>
                     <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"
                                  Opened="ContextMenu_Opened">
+                        <MenuItem Header="回复此邮件" Tag="{Binding}" Click="ReplyTicket_Click">
+                            <MenuItem.Icon>
+                                <Path Data="{StaticResource IconReply}" Fill="#1565C0" Width="15" Height="15" Stretch="Uniform"/>
+                            </MenuItem.Icon>
+                        </MenuItem>
                         <MenuItem Header="复制工单号" Tag="{Binding}" Click="CopyTicketNumber_Click">
                             <MenuItem.Icon>
                                 <Path Data="{StaticResource IconCopy}" Fill="#455A64" Width="15" Height="15" Stretch="Uniform"/>
@@ -319,8 +326,8 @@
                                 <Path Data="{StaticResource IconStar}" Fill="#F5A623" Width="15" Height="15" Stretch="Uniform"/>
                             </MenuItem.Icon>
                         </MenuItem>
-                        <Separator/>
-                        <MenuItem Header="设置状态">
+                        <Separator x:Name="MetaSep1"/>
+                        <MenuItem x:Name="SetStatusMenu" Header="设置状态">
                             <MenuItem Header="已解决" Tag="{Binding}" Click="SetStatus_Click"/>
                             <MenuItem Header="已关闭" Tag="{Binding}" Click="SetStatus_Click"/>
                             <MenuItem Header="处理中" Tag="{Binding}" Click="SetStatus_Click"/>
@@ -332,16 +339,16 @@
                             <Separator/>
                             <MenuItem Header="AI 总结" Tag="{Binding}" Click="RegenerateStatus_Click" InputGestureText="F9"/>
                         </MenuItem>
-                        <MenuItem Header="全部已读" Tag="{Binding}" Click="MarkThreadSeen_Click">
+                        <MenuItem x:Name="MarkSeenMenuItem" Header="全部已读" Tag="{Binding}" Click="MarkThreadSeen_Click">
                             <MenuItem.Icon>
                                 <Path Data="{StaticResource IconCheck}" Fill="#43A047" Width="15" Height="15" Stretch="Uniform"/>
                             </MenuItem.Icon>
                         </MenuItem>
-                        <Separator/>
-                        <MenuItem Header="设置产品" Tag="{Binding}"/>
-                        <MenuItem Header="设置客户" Tag="{Binding}"/>
-                        <Separator/>
-                        <MenuItem Header="清空产品/客户" Tag="{Binding}" Click="ClearMeta_Click"/>
+                        <Separator x:Name="MetaSep2"/>
+                        <MenuItem x:Name="SetProductMenu" Header="设置产品" Tag="{Binding}"/>
+                        <MenuItem x:Name="SetCustomerMenu" Header="设置客户" Tag="{Binding}"/>
+                        <Separator x:Name="MetaSep3"/>
+                        <MenuItem x:Name="ClearMetaMenuItem" Header="清空产品/客户" Tag="{Binding}" Click="ClearMeta_Click"/>
                     </ContextMenu>
                 </Grid.ContextMenu>
                 <StackPanel>

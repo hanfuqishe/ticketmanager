@@ -416,9 +416,16 @@ public partial class MainWindow : Window
     private void ContextMenu_Opened(object sender, RoutedEventArgs e)
     {
         if (sender is not ContextMenu menu || menu.DataContext is not EmailNodeViewModel ev) return;
-        // 星标菜单项文字随当前状态切换
+        // 星标菜单项文字随当前状态切换（根与非根都适用）
         if (menu.FindName("StarMenuItem") is MenuItem starMi)
             starMi.Header = ev.IsStarred ? "取消星标" : "星标";
+        // 子邮件：只保留 回复此邮件/复制工单号/星标（前 3 项），其余线索级项（设置状态/全部已读/设置产品客户/清空元数据）直接移除
+        if (!ev.IsRoot)
+        {
+            var toRemove = menu.Items.Cast<object>().Skip(3).ToList();
+            foreach (var it in toRemove) menu.Items.Remove(it);
+            return;
+        }
         // 目标集合：右键线索在 Ctrl/Shift 选中集内 → 应用到整个选中集；否则仅当前线索
         var targets = _vm.SelectedThreadIds.Contains(ev.Email.ThreadId)
             ? _vm.SelectedThreadIds.ToList()
@@ -1048,6 +1055,15 @@ public partial class MainWindow : Window
     {
         if (sender is not MenuItem mi || mi.Tag is not EmailNodeViewModel ev) return;
         await _vm.RegenerateThreadStatusAsync(ev.Email.Id);
+    }
+
+    /// <summary>右键“回复此邮件”：打开回复窗口（可选收信人=客服/客户接口人，另一个自动作为抄送）。</summary>
+    private void ReplyTicket_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem mi || mi.Tag is not EmailNodeViewModel ev) return;
+        var win = new Views.ReplyTicketWindow(App.Workflow, ev.Email);
+        win.Owner = this;
+        win.ShowDialog();
     }
 
     /// <summary>右键“全部已读”：把该线索内所有新同步邮件标记为已读。</summary>

@@ -104,7 +104,9 @@ public class ThreadBuilder
         }
 
         // 第四步：按工单号分组；无工单号的先按 Zoho threadId 归并（同一会话同一线索），
-        // 都没有的才退回 企业|产品 兜底（避免把多条无关对话堆进同一条大杂烩线索）
+        // 都没有的按引用链归属同一对话（同对话多封无主邮件并一组），否则各自独立成线索。
+        // 不能再用 企业|产品 兜底——那会把同一企业同一产品下的多条无关报障堆进同一条大杂烩线索
+        // （例：旺旺集团/Endpoint Central 下 2025、2026-05、2026-08 三条无关报障被并成一条）。
         var groups = new Dictionary<string, List<EmailMessage>>(StringComparer.OrdinalIgnoreCase);
         foreach (var e in allEmails)
         {
@@ -112,7 +114,7 @@ public class ThreadBuilder
             var key = string.IsNullOrEmpty(ticket)
                 ? e.ZohoThreadId is long zid && zid > 0
                     ? $"__zthread__{zid}"
-                    : $"__untitled__|{e.Enterprise}|{e.Product}"
+                    : UntitledGroupKey(e, index)
                 : ticket;
             if (!groups.TryGetValue(key, out var list)) { list = new List<EmailMessage>(); groups[key] = list; }
             list.Add(e);
@@ -329,6 +331,27 @@ public class ThreadBuilder
 
     private static IEnumerable<string> SplitRefs(string references) =>
         references.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    /// <summary>无主邮件（无工单号、无 Zoho threadId）的分组键：沿 References/In-Reply-To 追溯到对话链头，
+    /// 同一对话的邮件并一组，无引用的各自独立成线索（避免同企业同产品多条无关报障堆成一条大杂烩）。</summary>
+    private static string UntitledGroupKey(EmailMessage e, Dictionary<string, EmailMessage> index)
+    {
+        var cur = e;
+        for (var guard = 0; guard < 50; guard++)
+        {
+            EmailMessage? parent = null;
+            if (!string.IsNullOrEmpty(cur.InReplyTo) && index.TryGetValue(cur.InReplyTo, out var irt))
+                parent = irt;
+            else
+            {
+                foreach (var r in SplitRefs(cur.References).Reverse())
+                    if (index.TryGetValue(r, out var rf)) { parent = rf; break; }
+            }
+            if (parent == null || ReferenceEquals(parent, cur)) break;
+            cur = parent;
+        }
+        return $"__untitled__|{cur.Id}";
+    }
 
     /// <summary>从 Zoho 自动回复正文提取“登记工单”的原报障主题（中文引号）；无则返回空串。</summary>
     private static string ExtractReportedSubject(string body)

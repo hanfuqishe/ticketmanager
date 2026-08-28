@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Linq;
+using System.Text.RegularExpressions;
 using TicketManager.Models;
 
 namespace TicketManager.Services;
@@ -98,7 +99,10 @@ public class DeepSeekService : IDisposable
         if (!string.IsNullOrEmpty(previousSummary))
             userContent.AppendLine($"【上次总结】{previousSummary}");
         userContent.AppendLine(focusEmails == null ? "【邮件往来】" : "【本次新增邮件】");
-        var emails = focusEmails ?? thread.Emails;
+        // 排除休假/自动答复（Out-of-Office / 自动回复）：不是真实邮件往来，参与归纳会把状态带偏（如客户休假通知排在最后导致误判）
+        var allEmails = focusEmails ?? thread.Emails;
+        var emails = allEmails.Where(e => !IsAutoReply(e)).ToList();
+        if (emails.Count == 0) return null; // 本次只有自动答复、无真实往来 → 状态保持不变
         foreach (var e in emails.OrderBy(e => e.DateSent))
         {
             userContent.AppendLine($"---- {e.DateSent:MM-dd HH:mm} {DirectionLabel(e.FromAddress)}{e.DisplaySender} ----");
@@ -130,6 +134,20 @@ public class DeepSeekService : IDisposable
             status = "等待研发回复";
 
         return (status, string.IsNullOrEmpty(summary) ? resp.Trim() : summary);
+    }
+
+    /// <summary>是否休假/自动答复（Out-of-Office / 自动回复）：主题以“自动答复/自动回复/AutoReply/Out of Office/OOF”等开头。
+    /// 这类邮件不是真实邮件往来（如客户休假通知），参与状态归纳会把方向带偏，应在归纳前排除。</summary>
+    private static bool IsAutoReply(EmailMessage e)
+    {
+        var subject = (e.Subject ?? "").Trim();
+        // 中文：自动答复: / 自动回复: / 自动回覆: / 自动回信:
+        if (Regex.IsMatch(subject, @"^(自动答复|自动回复|自动回覆|自动回信|自動回覆|自動回信)\s*[:：]"))
+            return true;
+        // 英文：AutoReply: / Auto-Reply / Auto Response / Out of Office / OOF
+        if (Regex.IsMatch(subject, @"^(auto\s*-?\s*reply|auto\s*-?\s*response|auto\s*reply|out\s*-?\s*of\s*-?\s*office|oof)\b", RegexOptions.IgnoreCase))
+            return true;
+        return false;
     }
 
     /// <summary>按发件人地址标注邮件方向：自己的邮箱或我方同事域名→[我]，关注客服邮箱→[客服]，日志上传确认→[上传确认]，否则→[客户]。</summary>

@@ -419,10 +419,24 @@ public partial class MainWindow : Window
         // 星标菜单项文字随当前状态切换（根与非根都适用）
         if (menu.FindName("StarMenuItem") is MenuItem starMi)
             starMi.Header = ev.IsStarred ? "取消星标" : "星标";
-        // 子邮件：只保留 回复此邮件/复制工单号/星标（前 3 项），其余线索级项（设置状态/全部已读/设置产品客户/清空元数据）直接移除
+        // 上传日志：根/子邮件都可用（链接只用线索级信息：客服邮箱 + 工单号）
+        // 注意：菜单定义在 DataTemplate 里，FindName 按 x:Name 可能找不到，改用按 Header 遍历 Items（更可靠）
+        if (FindMenuItem(menu, "上传日志") is MenuItem uploadMi)
+        {
+            var supportEmail = ResolveSupportEmail(ev);
+            var ticket = ev.ThreadOwner.TicketNumber;
+            string? reason = null;
+            if (string.IsNullOrWhiteSpace(ticket)) reason = "该线索没有工单号，无法上传日志";
+            else if (string.IsNullOrEmpty(supportEmail)) reason = "未找到客服邮箱";
+            else if (IsCnMailbox(supportEmail)) reason = "客服邮箱为 .cn 域名，不支持上传日志";
+            uploadMi.IsEnabled = reason == null;
+            uploadMi.ToolTip = reason ?? $"打开上传链接给 {supportEmail}（工单 {ticket}）";
+            if (reason != null) _vm.StatusText = $"[上传日志] {reason}"; // 诊断：置灰时在状态栏提示原因
+        }
+        // 子邮件：只保留 回复此邮件/复制工单号/星标/上传日志（前 4 项），其余线索级项（设置状态/全部已读/设置产品客户/清空元数据）直接移除
         if (!ev.IsRoot)
         {
-            var toRemove = menu.Items.Cast<object>().Skip(3).ToList();
+            var toRemove = menu.Items.Cast<object>().Skip(4).ToList();
             foreach (var it in toRemove) menu.Items.Remove(it);
             return;
         }
@@ -1303,6 +1317,69 @@ public partial class MainWindow : Window
         }
         Clipboard.SetText(ticket);
         _vm.StatusText = $"已复制工单号：{ticket}";
+    }
+
+    /// <summary>右键“上传日志”：打开客服的上传日志链接（代入客服邮箱与工单号），
+    /// 形如 https://bonitas.zohocorp.com/#to=客服邮箱&amp;ticketid=工单号。仅客服邮箱为非 .cn 域名时可用。</summary>
+    private void UploadLog_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not MenuItem mi || mi.Tag is not EmailNodeViewModel ev) return;
+        var email = ResolveSupportEmail(ev);
+        var ticket = ev.ThreadOwner.TicketNumber;
+        if (string.IsNullOrWhiteSpace(ticket) || string.IsNullOrEmpty(email) || IsCnMailbox(email))
+        {
+            _vm.StatusText = "该线索不支持上传日志（客服邮箱为 .cn 域名或无工单号）";
+            return;
+        }
+        try
+        {
+            var url = $"https://bonitas.zohocorp.com/#to={email}&ticketid={ticket}";
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
+            _vm.StatusText = $"已打开上传日志链接：{email}（工单 {ticket}）";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"无法打开链接：{ex.Message}", "上传日志", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>线索的客服邮箱：取线索邮件中最后出现的客服邮箱（发件/收件/抄送都算）。
+    /// 客服邮箱 = 关注的客服邮箱，或未关注但符合厂商支持邮箱规则（@前含 support、@后含 manageengine/zohocorp，如 support@manageengine.com）。</summary>
+    private static string ResolveSupportEmail(EmailNodeViewModel ev)
+    {
+        var support = App.Workflow.Config.MonitoredAddresses;
+        string? found = null;
+        foreach (var email in ev.ThreadOwner.Thread.Emails.OrderBy(x => x.DateSent))
+        {
+            if (IsSupportAddress(email.FromAddress, support)) found = email.FromAddress;
+            foreach (var a in SplitAddresses(email.ToAddresses).Concat(SplitAddresses(email.CcAddresses)))
+                if (IsSupportAddress(a, support)) found = a;
+        }
+        return found ?? "";
+    }
+
+    /// <summary>是否客服邮箱：关注的客服邮箱，或未关注但符合厂商支持邮箱规则（@前含 support、@后含 manageengine/zohocorp）。</summary>
+    private static bool IsSupportAddress(string addr, IReadOnlyList<string> monitored)
+    {
+        if (string.IsNullOrWhiteSpace(addr)) return false;
+        if (monitored.Any(m => string.Equals(m, addr, StringComparison.OrdinalIgnoreCase))) return true;
+        var at = addr.IndexOf('@');
+        if (at <= 0 || at == addr.Length - 1) return false;
+        var domain = addr[(at + 1)..];
+        return addr[..at].Contains("support", StringComparison.OrdinalIgnoreCase) &&
+               (domain.Contains("manageengine", StringComparison.OrdinalIgnoreCase) ||
+                domain.Contains("zohocorp", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static IEnumerable<string> SplitAddresses(string s) =>
+        (s ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    /// <summary>邮箱域名是否以 .cn 结尾（.cn/.com.cn 等中文域名；上传日志仅对非 .cn 客服邮箱有效）。</summary>
+    private static bool IsCnMailbox(string email)
+    {
+        var at = email.LastIndexOf('@');
+        if (at < 0 || at == email.Length - 1) return false;
+        return email[(at + 1)..].EndsWith(".cn", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>点击邮件行星标图标：切换该邮件星标。</summary>

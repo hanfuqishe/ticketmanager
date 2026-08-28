@@ -326,6 +326,11 @@
                                 <Path Data="{StaticResource IconStar}" Fill="#F5A623" Width="15" Height="15" Stretch="Uniform"/>
                             </MenuItem.Icon>
                         </MenuItem>
+                        <MenuItem x:Name="UploadLogMenu" Header="上传日志" Tag="{Binding}" Click="UploadLog_Click" IsEnabled="False">
+                            <MenuItem.Icon>
+                                <Path Data="{StaticResource IconPaperclip}" Fill="#1565C0" Width="15" Height="15" Stretch="Uniform"/>
+                            </MenuItem.Icon>
+                        </MenuItem>
                         <Separator x:Name="MetaSep1"/>
                         <MenuItem x:Name="SetStatusMenu" Header="设置状态">
                             <MenuItem Header="已解决" Tag="{Binding}" Click="SetStatus_Click"/>

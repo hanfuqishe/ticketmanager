@@ -193,7 +193,7 @@ public class SubmitTicketViewModel : ViewModelBase
                 var addr = WorkflowService.ExtractEmail(a);
                 if (addr.Length > 0) ccList.Add(addr);
             }
-            var cc = string.Join(";", ccList.Distinct(StringComparer.OrdinalIgnoreCase));
+            var cc = string.Join(",", ccList.Distinct(StringComparer.OrdinalIgnoreCase)); // Zoho 发信只接受逗号分隔（分号会报“收件人地址中含有特殊字符”）
             var sig = _signatures.FirstOrDefault(s => s.Name == SelectedSignature);
             var content = BuildBodyHtml(Body ?? "", sig);
             var (ok, err) = await _workflow.SendTicketEmailAsync(

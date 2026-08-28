@@ -47,8 +47,12 @@ public class ReplyTicketViewModel : ViewModelBase
     }
     private ReplyRecipient? _selectedRecipient;
 
-    /// <summary>抄送邮箱（其余所有候选人，用分号连接；支持多个抄送人）。</summary>
-    public string CcEmails => string.Join("; ", Recipients.Where(r => !ReferenceEquals(r, SelectedRecipient)).Select(r => r.Email));
+    /// <summary>抄送邮箱（其余所有候选人，用逗号连接——Zoho 发信接口只接受逗号分隔，分号会报“收件人地址中含有特殊字符”）。</summary>
+    public string CcEmails => string.Join(",", Recipients
+        .Where(r => !ReferenceEquals(r, SelectedRecipient))
+        .Select(r => WorkflowService.ExtractEmail(r.Email))
+        .Where(e => e.Length > 0)
+        .Distinct(StringComparer.OrdinalIgnoreCase));
     public string CcDisplay => string.IsNullOrEmpty(CcEmails) ? "（无）" : CcEmails;
 
     public string Body
@@ -78,10 +82,11 @@ public class ReplyTicketViewModel : ViewModelBase
     }
     private bool _isTranslating;
 
-    /// <summary>收信人纯邮箱。</summary>
-    public string RecipientEmail => SelectedRecipient?.Email?.Trim() ?? "";
+    /// <summary>收信人纯邮箱（提纯：万一含“姓名 <邮箱>”也解析出纯邮箱）。</summary>
+    public string RecipientEmail => WorkflowService.ExtractEmail(SelectedRecipient?.Email ?? "");
 
-    public bool CanSend => !IsSending && !IsTranslating && !string.IsNullOrWhiteSpace(RecipientEmail) && !string.IsNullOrWhiteSpace(Body);
+    /// <summary>发送按钮可用条件：收件人有效即可（正文可为空，空正文点发送会提示填写）。</summary>
+    public bool CanSend => !IsSending && !IsTranslating && !string.IsNullOrWhiteSpace(RecipientEmail);
 
     // 全局邮件字体（与提新工单一致）
     public string EmailFontFamily => _workflow.Config.EmailFontFamily;
@@ -202,7 +207,7 @@ public class ReplyTicketViewModel : ViewModelBase
         return head + string.Concat(ticketTokens) + " " + translated.Trim();
     }
 
-    /// <summary>正文 + 引用头部 + 签名 组装 HTML（正文/签名用全局字体，引用为灰色小字）。</summary>
+    /// <summary>正文 + 签名 + 引用头部 组装 HTML（正文/签名用全局字体，引用为灰色小字放最后）。</summary>
     private string BuildBodyHtml()
     {
         var cfg = _workflow.Config;
@@ -215,10 +220,6 @@ public class ReplyTicketViewModel : ViewModelBase
               .Append(WebUtility.HtmlEncode(Body).Replace("\r\n", "<br>").Replace("\n", "<br>").Replace("\r", "<br>"))
               .Append("</div>");
         }
-        sb.Append("<div style=\"margin-top:16px;padding-top:8px;border-top:1px solid #ccc;color:#888888;font-size:10pt;font-family:'")
-          .Append(WebUtility.HtmlEncode(cfg.EmailFontFamily)).Append("';\">")
-          .Append(WebUtility.HtmlEncode(QuoteHeader).Replace("\r\n", "<br>").Replace("\n", "<br>"))
-          .Append("</div>");
         var sig = _workflow.LoadSignatures().FirstOrDefault(s => s.Name == Signature);
         if (sig != null && !string.IsNullOrWhiteSpace(sig.Text))
         {
@@ -228,6 +229,10 @@ public class ReplyTicketViewModel : ViewModelBase
               .Append("pt;color:").Append(WebUtility.HtmlEncode(cfg.EmailFontColor)).Append(";\">")
               .Append(sigText).Append("</div>");
         }
+        sb.Append("<div style=\"margin-top:16px;padding-top:8px;border-top:1px solid #ccc;color:#888888;font-size:10pt;font-family:'")
+          .Append(WebUtility.HtmlEncode(cfg.EmailFontFamily)).Append("';\">")
+          .Append(WebUtility.HtmlEncode(QuoteHeader).Replace("\r\n", "<br>").Replace("\n", "<br>"))
+          .Append("</div>");
         return sb.ToString();
     }
 }

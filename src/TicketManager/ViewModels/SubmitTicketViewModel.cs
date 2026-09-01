@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Net;
 using System.Text;
 using System.Windows.Input;
@@ -108,6 +109,14 @@ public class SubmitTicketViewModel : ViewModelBase
         if (dlg.ShowDialog() != true) return;
         foreach (var f in dlg.FileNames)
             if (!Attachments.Contains(f)) Attachments.Add(f);
+        OnPropertyChanged(nameof(AttachmentSummary));
+    }
+
+    /// <summary>把指定文件加入附件列表（正文粘贴文件/图片时用；去重并刷新摘要）。</summary>
+    public void AddAttachmentPath(string path)
+    {
+        if (string.IsNullOrEmpty(path) || !File.Exists(path) || Attachments.Contains(path)) return;
+        Attachments.Add(path);
         OnPropertyChanged(nameof(AttachmentSummary));
     }
 

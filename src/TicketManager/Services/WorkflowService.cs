@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text.Json;
 using MailKit;
 using TicketManager.Models;
@@ -326,6 +327,7 @@ public class WorkflowService
                         e.FaultDescription = parsed.Fault;
                     }
                     e.Id = _db.UpsertEmail(e);
+                    InlineImageStorage.Save(e); // 正文内嵌图片落盘（Id 已分配）
                     newCount++;
                     return Task.CompletedTask;
                 },
@@ -450,7 +452,7 @@ public class WorkflowService
                     if (string.IsNullOrEmpty(email.TicketNumber))
                         email.TicketNumber = ExtractTicketFromBody(email.BodyText);
                     await writeLock.WaitAsync(ct2);
-                    try { _db.UpsertEmail(email); newCount++; }
+                    try { _db.UpsertEmail(email); InlineImageStorage.Save(email); newCount++; }
                     finally { writeLock.Release(); }
                 }
                 var d = Interlocked.Increment(ref downloaded);
@@ -1116,6 +1118,194 @@ public class WorkflowService
 
     /// <summary>清除单封邮件的新同步标记（点击查看后即已读）。</summary>
     public void MarkEmailSeen(long id) => _db.MarkEmailSeen(id);
+
+    /// <summary>设置/清除某封邮件的“忽略”标记，并重建线程（被忽略邮件退出原线索，重新归组）。</summary>
+    public void SetEmailIgnored(long id, bool ignored)
+    {
+        _db.SetEmailIgnored(id, ignored);
+        RebuildThreads();
+    }
+
+    /// <summary>加载所有被忽略的邮件（新到旧），供“被忽略的邮件”分组展示。</summary>
+    public List<EmailMessage> LoadIgnoredEmails() => _db.LoadIgnoredEmails();
+
+    // ================= 附件下载 =================
+
+    /// <summary>附件缓存目录：%AppData%\TicketManager\attachments\&lt;emailId&gt;\&lt;附件名&gt;（已下载的直接复用）。</summary>
+    private static string AttachmentCacheDir => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "TicketManager", "attachments");
+
+    /// <summary>下载某封邮件的指定附件到缓存目录并返回本地路径；已缓存直接返回；下载失败返回 null。</summary>
+    public string? DownloadAttachment(long emailId, string attachmentName)
+    {
+        if (string.IsNullOrEmpty(attachmentName)) return null;
+        var email = _db.LoadAllEmails().FirstOrDefault(e => e.Id == emailId);
+        if (email == null) return null;
+
+        var dir = Path.Combine(AttachmentCacheDir, emailId.ToString());
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, SanitizeFileName(attachmentName));
+        if (File.Exists(path)) return path; // 已下载过，直接复用
+
+        byte[]? bytes = null;
+        try
+        {
+            if (email.Uid > 0 && !string.IsNullOrEmpty(email.Folder))
+            {
+                // IMAP 路径：按 文件夹+UID+附件名 重连邮箱下载
+                var imap = new ImapSyncService(_config);
+                bytes = imap.DownloadAttachment(email.Folder, email.Uid, attachmentName);
+            }
+            else if (!string.IsNullOrEmpty(email.ZohoMessageId))
+            {
+                // Zoho 路径：历史邮件可能缺 folderId / 附件元数据，先回填（attachmentinfo），再按 attachmentId 下载
+                if (email.ZohoFolderId <= 0 || email.Attachments.Count == 0)
+                {
+                    EnsureAttachments(emailId);
+                    email = _db.LoadAllEmails().First(e => e.Id == emailId);
+                }
+                var att = email.Attachments.FirstOrDefault(a =>
+                    string.Equals(a.Name, attachmentName, StringComparison.OrdinalIgnoreCase));
+                if (att != null && !string.IsNullOrEmpty(att.Id) && email.ZohoFolderId > 0 &&
+                    long.TryParse(email.ZohoMessageId, out var zid))
+                {
+                    var api = new ZohoMailApiService(_config);
+                    var accountId = api.GetAccountIdAsync().GetAwaiter().GetResult();
+                    if (accountId is long acc)
+                        bytes = api.DownloadAttachmentAsync(acc, email.ZohoFolderId, zid, att.Id)
+                            .GetAwaiter().GetResult();
+                }
+            }
+        }
+        catch { bytes = null; }
+
+        if (bytes == null || bytes.Length == 0) return null;
+        File.WriteAllBytes(path, bytes);
+        return path;
+    }
+
+    /// <summary>把附件名规范化为安全文件名（去掉非法字符），保留中文与扩展名。</summary>
+    private static string SanitizeFileName(string s)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var sb = new System.Text.StringBuilder(s.Length);
+        foreach (var c in s) sb.Append(invalid.Contains(c) ? '_' : c);
+        var name = sb.ToString().Trim();
+        return string.IsNullOrWhiteSpace(name) ? "attachment" : name;
+    }
+
+    /// <summary>解析某封 Zoho 邮件的 folderId：优先已存值；为 0（历史邮件）时按文件夹名匹配 Zoho 文件夹列表并持久化。</summary>
+    private long ResolveZohoFolderId(EmailMessage email, ZohoMailApiService api)
+    {
+        if (email.ZohoFolderId > 0) return email.ZohoFolderId;
+        if (string.IsNullOrEmpty(email.Folder)) return 0;
+        var acc = api.GetAccountIdAsync().GetAwaiter().GetResult();
+        if (acc is not long a) return 0;
+        var folders = api.GetFoldersAsync(a).GetAwaiter().GetResult();
+        var fid = folders.FirstOrDefault(f => string.Equals(f.Name, email.Folder, StringComparison.OrdinalIgnoreCase))?.Id ?? 0;
+        if (fid > 0)
+        {
+            email.ZohoFolderId = fid;
+            _db.UpdateEmailZohoFolderId(email.Id, fid);
+        }
+        return fid;
+    }
+
+    /// <summary>
+    /// 按需回填附件元数据：历史邮件（增量同步不重下）没有附件名，用户选中时拉取一次 Zoho attachmentinfo 提取附件名并入库。
+    /// 仅支持 Zoho 邮件。返回语义：null=调用失败（限流/网络，应允许重试）；空列表=确认无附件；非空=附件列表。
+    /// </summary>
+    public List<EmailAttachment>? EnsureAttachments(long emailId)
+    {
+        var email = _db.LoadAllEmails().FirstOrDefault(e => e.Id == emailId);
+        if (email == null) return null;
+        if (email.Attachments.Count > 0) return email.Attachments;
+        if (string.IsNullOrEmpty(email.ZohoMessageId)) return new List<EmailAttachment>();
+        try
+        {
+            var api = new ZohoMailApiService(_config);
+            if (!long.TryParse(email.ZohoMessageId, out var zid)) return new List<EmailAttachment>();
+            var accountId = api.GetAccountIdAsync().GetAwaiter().GetResult();
+            if (accountId is not long acc) return null; // 获取账号失败（限流等）→ 允许重试
+            var fid = ResolveZohoFolderId(email, api); // 历史邮件 folderId 为 0，按文件夹名解析并回填
+            if (fid <= 0) return null; // 无法定位文件夹（含 API 失败）→ 允许重试
+            var info = api.GetAttachmentInfoAsync(acc, fid, zid).GetAwaiter().GetResult();
+            if (info == null) return null; // attachmentinfo 调用失败（限流等）→ 允许重试
+            var atts = ZohoMailApiService.ExtractAttachments(info);
+            if (atts.Count > 0)
+            {
+                email.Attachments = atts;
+                _db.UpdateEmailAttachments(emailId, atts);
+            }
+            return atts;
+        }
+        catch
+        {
+            return null; // 异常 → 允许重试
+        }
+    }
+
+    /// <summary>内嵌图片回填结果：Handled=true 表示已处理（回填成功或确认无图，可防重复）；NewBody 非空表示正文需刷新。</summary>
+    public record InlineBackfillResult(bool Handled, string? NewBody);
+
+    /// <summary>
+    /// 历史邮件回填正文内嵌图片：BodyText 无占位符时重新拉取 Zoho content HTML，提取 <img cid> 占位符并下载 isInline 图片，
+    /// 更新 DB 的 BodyText/InlineImages 并落盘图片。返回 Handled=false 表示 API 失败（限流等），允许下次重试。
+    /// </summary>
+    public InlineBackfillResult EnsureInlineImages(long emailId)
+    {
+        var email = _db.LoadAllEmails().FirstOrDefault(e => e.Id == emailId);
+        if (email == null) return new InlineBackfillResult(false, null);
+        if (InlineImage.HasPlaceholder(email.BodyText)) return new InlineBackfillResult(true, null); // 已回填
+        if (string.IsNullOrEmpty(email.ZohoMessageId)) return new InlineBackfillResult(true, null); // 非 Zoho 不支持回填
+        try
+        {
+            var api = new ZohoMailApiService(_config);
+            if (!long.TryParse(email.ZohoMessageId, out var zid)) return new InlineBackfillResult(true, null);
+            var accountId = api.GetAccountIdAsync().GetAwaiter().GetResult();
+            if (accountId is not long acc) return new InlineBackfillResult(false, null); // API 失败 → 可重试
+            var fid = ResolveZohoFolderId(email, api);
+            if (fid <= 0) return new InlineBackfillResult(false, null);
+            var content = api.GetMessageContentAsync(acc, fid, zid).GetAwaiter().GetResult();
+            if (content == null) return new InlineBackfillResult(false, null);
+            var imageCids = new List<string>();
+            var body = "";
+            if (content.Value.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String)
+                body = ZohoMailApiService.StripHtmlKeepImages(c.GetString() ?? "", imageCids);
+            if (!InlineImage.HasPlaceholder(body)) return new InlineBackfillResult(true, null); // 确认无内嵌图片
+
+            // 下载 isInline 内嵌图片（按 cid 出现顺序与 isInline 附件顺序对应，尽力）
+            var attachInfo = api.GetAttachmentInfoAsync(acc, fid, zid).GetAwaiter().GetResult();
+            var inlineFiles = new List<string>();
+            var inlineBytes = new List<byte[]>();
+            if (attachInfo != null && attachInfo.Value.TryGetProperty("attachments", out var attsArr) && attsArr.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var a in attsArr.EnumerateArray())
+                {
+                    var isInline = a.TryGetProperty("isInline", out var inl) && inl.ValueKind == JsonValueKind.True;
+                    var name = ZohoMailApiService.GetPropStr(a, "attachmentName");
+                    if (!isInline || string.IsNullOrWhiteSpace(name)) continue;
+                    var id = ZohoMailApiService.GetPropStr(a, "attachmentId");
+                    var idx = inlineFiles.Count;
+                    var ext = Path.GetExtension(name);
+                    inlineFiles.Add($"img{idx}{(string.IsNullOrEmpty(ext) ? ".png" : ext)}");
+                    inlineBytes.Add(string.IsNullOrEmpty(id)
+                        ? Array.Empty<byte>()
+                        : api.DownloadAttachmentAsync(acc, fid, zid, id).GetAwaiter().GetResult() ?? Array.Empty<byte>());
+                }
+            }
+
+            _db.UpdateEmailBodyAndInline(emailId, body, inlineFiles);
+            var tmp = new EmailMessage { Id = emailId, InlineImages = inlineFiles, InlineImageBytes = inlineBytes.Count > 0 ? inlineBytes : null };
+            InlineImageStorage.Save(tmp);
+            return new InlineBackfillResult(true, body);
+        }
+        catch
+        {
+            return new InlineBackfillResult(false, null);
+        }
+    }
 
     /// <summary>把指定线索内的所有新同步邮件标记为已读。</summary>
     public void MarkThreadSeen(long threadId) => _db.MarkThreadSeen(threadId);

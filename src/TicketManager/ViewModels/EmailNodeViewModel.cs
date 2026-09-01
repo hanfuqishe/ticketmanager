@@ -92,6 +92,9 @@ public class EmailNodeViewModel : ViewModelBase
     /// <summary>本邮件是否已标星：根邮件（线索行）反映线索内是否有星标邮件，其余邮件反映自身星标。</summary>
     public bool IsStarred => IsRoot ? ThreadOwner.Thread.Emails.Any(e => e.Starred) : Email.Starred;
 
+    /// <summary>本邮件是否已被忽略（被忽略邮件单独收集在“被忽略的邮件”分组）。</summary>
+    public bool IsIgnored => Email.Ignored;
+
     /// <summary>星标状态变化后刷新图标（点击切换后调用）。</summary>
     public void RefreshStarState()
     {

@@ -364,10 +364,35 @@ public class ZohoMailApiService
     {
         var content = await GetMessageContentAsync(accountId, folderId, m.MessageId, ct);
         var body = "";
+        var imageCids = new List<string>();
         if (content != null && content.Value.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String)
-            body = StripHtml(c.GetString() ?? "");
+            body = StripHtmlKeepImages(c.GetString() ?? "", imageCids);
         var maxChars = _config.MaxBodyChars;
         if (body.Length > maxChars) body = body[..maxChars];
+
+        // 附件信息：普通附件记录元数据；内嵌图片（isInline）下载字节，按 cid 出现顺序对应
+        var attachInfo = await GetAttachmentInfoAsync(accountId, folderId, m.MessageId, ct);
+        var attachments = new List<EmailAttachment>();
+        var inlineFiles = new List<string>();
+        var inlineBytes = new List<byte[]>();
+        if (attachInfo != null && attachInfo.Value.TryGetProperty("attachments", out var attsArr) && attsArr.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var a in attsArr.EnumerateArray())
+            {
+                var isInline = a.TryGetProperty("isInline", out var inl) && inl.ValueKind == JsonValueKind.True;
+                var name = GetPropStr(a, "attachmentName");
+                var id = GetPropStr(a, "attachmentId");
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                if (!isInline) { attachments.Add(new EmailAttachment(name, id)); continue; }
+                var idx = inlineFiles.Count;
+                var ext = Path.GetExtension(name);
+                inlineFiles.Add($"img{idx}{(string.IsNullOrEmpty(ext) ? ".png" : ext)}");
+                inlineBytes.Add(string.IsNullOrEmpty(id)
+                    ? Array.Empty<byte>()
+                    : await DownloadAttachmentAsync(accountId, folderId, m.MessageId, id, ct) ?? Array.Empty<byte>());
+            }
+        }
+
         return new EmailMessage
         {
             Folder = folderName,
@@ -375,6 +400,7 @@ public class ZohoMailApiService
             MessageId = "",
             ZohoMessageId = m.MessageId.ToString(),
             ZohoThreadId = m.ThreadId,
+            ZohoFolderId = folderId,
             FromAddress = CleanSingleAddress(m.FromAddress),
             FromName = "",
             ToAddresses = ExtractAddresses(m.ToAddress),
@@ -383,8 +409,47 @@ public class ZohoMailApiService
             DateSent = MsToSentDateTime(m.SentDate),
             DateReceived = MsToDateTime(m.ReceivedTime),
             BodyText = body,
-            ContentHash = ComputeHash(body)
+            ContentHash = ComputeHash(body),
+            Attachments = attachments,
+            InlineImages = inlineFiles,
+            InlineImageBytes = inlineBytes.Count > 0 ? inlineBytes : null
         };
+    }
+
+    /// <summary>取邮件的附件信息（attachmentinfo 端点，含 attachmentId/attachmentName/attachmentSize/isInline），返回 data 节点；失败返回 null。</summary>
+    public async Task<JsonElement?> GetAttachmentInfoAsync(
+        long accountId, long folderId, long messageId, CancellationToken ct = default)
+        => await GetJsonAsync($"/accounts/{accountId}/folders/{folderId}/messages/{messageId}/attachmentinfo", ct);
+
+    /// <summary>从 attachmentinfo 的 data 节点提取附件（名称+attachmentId；排除内嵌图片）。返回空列表表示无附件。</summary>
+    public static List<EmailAttachment> ExtractAttachments(JsonElement? content)
+    {
+        var attachments = new List<EmailAttachment>();
+        if (content == null) return attachments;
+        if (!content.Value.TryGetProperty("attachments", out var atts) || atts.ValueKind != JsonValueKind.Array)
+            return attachments;
+        foreach (var a in atts.EnumerateArray())
+        {
+            if (a.TryGetProperty("isInline", out var inl) && inl.ValueKind == JsonValueKind.True) continue;
+            var name = GetPropStr(a, "attachmentName");
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            attachments.Add(new EmailAttachment(name, GetPropStr(a, "attachmentId")));
+        }
+        return attachments;
+    }
+
+    /// <summary>下载某封邮件的某个附件（Zoho REST：GET .../messages/{messageId}/attachments/{attachmentId}），返回字节内容；失败返回 null。</summary>
+    public async Task<byte[]?> DownloadAttachmentAsync(
+        long accountId, long folderId, long messageId, string attachmentId, CancellationToken ct = default)
+    {
+        var token = await GetAccessTokenAsync(ct);
+        if (string.IsNullOrEmpty(token)) return null;
+        var req = new HttpRequestMessage(HttpMethod.Get,
+            $"{ApiBase}/accounts/{accountId}/folders/{folderId}/messages/{messageId}/attachments/{attachmentId}");
+        req.Headers.Authorization = new AuthenticationHeaderValue("Zoho-oauthtoken", token);
+        using var resp = await _http.SendAsync(req, ct);
+        if (!resp.IsSuccessStatusCode) return null;
+        return await resp.Content.ReadAsByteArrayAsync(ct);
     }
 
     /// <summary>从地址串中提取所有邮箱地址，用 ; 连接（Zoho 的 to/cc 常带姓名与 HTML 编码）。</summary>
@@ -430,7 +495,7 @@ public class ZohoMailApiService
         return DateTimeOffset.FromUnixTimeMilliseconds(v - _sentOffsetMs).ToLocalTime();
     }
 
-    /// <summary>HTML 正文转纯文本（与 IMAP 路径保持一致的处理）。</summary>
+    /// <summary>HTML 转纯文本。</summary>
     private static string StripHtml(string html)
     {
         if (string.IsNullOrEmpty(html)) return "";
@@ -441,6 +506,24 @@ public class ZohoMailApiService
         html = Regex.Replace(html, @"[ \t]+", " ");
         html = Regex.Replace(html, @"\n{3,}", "\n\n");
         return html.Trim();
+    }
+
+    /// <summary>HTML 转纯文本，但 <img cid> 保留为占位符（收集 cid 到列表），使正文内嵌图片能在对应位置显示。</summary>
+    internal static string StripHtmlKeepImages(string html, List<string> imageCids)
+    {
+        if (string.IsNullOrEmpty(html)) return "";
+        html = Regex.Replace(html,
+            @"(?i)<img[^>]*\bsrc\s*=\s*[""']?(?<src>[^""'\s>]+)[""']?[^>]*>", m =>
+            {
+                var src = m.Groups["src"].Value;
+                if (src.StartsWith("cid:", StringComparison.OrdinalIgnoreCase))
+                {
+                    imageCids.Add(src[4..]);
+                    return TicketManager.Models.InlineImage.Placeholder(imageCids.Count - 1);
+                }
+                return "";
+            });
+        return StripHtml(html);
     }
 
     private static string ComputeHash(string text)
@@ -458,6 +541,6 @@ public class ZohoMailApiService
         return 0;
     }
 
-    private static string GetPropStr(JsonElement e, string name)
+    internal static string GetPropStr(JsonElement e, string name)
         => e.TryGetProperty(name, out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() ?? "" : "";
 }

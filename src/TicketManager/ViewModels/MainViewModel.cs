@@ -1,9 +1,11 @@
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using TicketManager.Models;
 using TicketManager.Services;
 
@@ -26,11 +28,18 @@ public class MainViewModel : ViewModelBase
     private ObservableCollection<CustomerGroupViewModel> _customers = new();
     public ObservableCollection<CustomerGroupViewModel> Customers => _customers;
 
-    /// <summary>一次性替换客户分组集合（避免 Clear+逐条 Add 导致的界面闪烁/空白）。</summary>
+    /// <summary>树最底部的“已忽略的邮件”顶层大类（独立于客户分组，用专门图标）。</summary>
+    private ObservableCollection<IgnoredGroupViewModel> _ignoredGroups = new();
+    public ObservableCollection<IgnoredGroupViewModel> IgnoredGroups => _ignoredGroups;
+
+    /// <summary>重建客户分组集合。必须在原集合实例上 Clear+Add（而非替换引用）：
+    /// 树的 ItemsSource 是 CompositeCollection 中的 CollectionContainer，它持有的是本集合实例的固定引用，
+    /// 替换引用（new ObservableCollection）会使其永远看不到新数据（树空白）。同批次内 Clear+Add 一起执行，
+    /// UI 在下一个布局周期统一渲染，不会产生闪烁。</summary>
     private void ReplaceCustomers(IEnumerable<CustomerGroupViewModel> items)
     {
-        _customers = new ObservableCollection<CustomerGroupViewModel>(items);
-        OnPropertyChanged(nameof(Customers));
+        _customers.Clear();
+        foreach (var i in items) _customers.Add(i);
     }
 
     public ObservableCollection<SortOption> SortOptions { get; } = new()
@@ -149,6 +158,18 @@ public class MainViewModel : ViewModelBase
         }
     }
 
+    private bool _showIgnored;
+    /// <summary>“显示被忽略的邮件”开关：勾选后在树最底部显示“被忽略的邮件”分组（默认不显示）。</summary>
+    public bool ShowIgnored
+    {
+        get => _showIgnored;
+        set
+        {
+            if (Set(ref _showIgnored, value))
+                RebuildTreeWithBusyCursor();
+        }
+    }
+
     /// <summary>在忙碌光标下重建树：过滤切换重建可能耗时，先让鼠标变为等待状再执行（
     /// 用 Background 优先级延迟执行，确保等待光标先渲染出来；无 WPF 环境时回退为同步重建）。</summary>
     private void RebuildTreeWithBusyCursor()
@@ -226,9 +247,97 @@ public class MainViewModel : ViewModelBase
                 OnPropertyChanged(nameof(SelectedEmailMeta));
                 OnPropertyChanged(nameof(SelectedEmailBody));
                 OnPropertyChanged(nameof(EmailBodyDisplay));
+                RefreshSelectedAttachments();
+                CheckInlineImagesBackfill(); // 历史邮件选中时回填正文内嵌图片
                 ResetTranslation();
             }
         }
+    }
+
+    // ---- 详情页邮件正文字体（来自配置；主菜单“设置→字体…”保存后刷新）----
+    public string EmailFontFamily => _workflow.Config.EmailFontFamily;
+    public double EmailFontSize => _workflow.Config.EmailFontSize;
+    public string EmailFontColor => _workflow.Config.EmailFontColor;
+    public Brush EmailFontColorBrush
+    {
+        get
+        {
+            try
+            {
+                return new SolidColorBrush((Color)ColorConverter.ConvertFromString(_workflow.Config.EmailFontColor));
+            }
+            catch { return Brushes.Black; }
+        }
+    }
+
+    /// <summary>已尝试过“回填正文内嵌图片”的邮件 Id（避免每次选中都重复调 Zoho API）。</summary>
+    private readonly HashSet<long> _inlineChecked = new();
+
+    /// <summary>历史邮件（BodyText 无图片占位符）选中时：触发一次内嵌图片回填（重新拉取 HTML 提取并保存图片）。</summary>
+    private void CheckInlineImagesBackfill()
+    {
+        var email = SelectedEmail?.Email;
+        var id = SelectedEmail?.Email.Id ?? 0;
+        if (email == null || id <= 0) return;
+        if (TicketManager.Models.InlineImage.HasPlaceholder(email.BodyText)) return; // 新同步已提取
+        if (!_inlineChecked.Add(id)) return; // 每封只尝试一次（失败不标记，允许下次重试）
+        _ = BackfillInlineImagesAsync(id);
+    }
+
+    /// <summary>后台回填选中邮件的内嵌图片；成功后更新内存正文并刷新显示（图片在正文对应位置出现）。</summary>
+    private async Task BackfillInlineImagesAsync(long emailId)
+    {
+        var r = await Task.Run(() => _workflow.EnsureInlineImages(emailId));
+        if (r.NewBody == null) return;
+        if (SelectedEmail?.Email.Id != emailId) return; // 用户已切换邮件
+        SelectedEmail.Email.BodyText = r.NewBody;
+        OnPropertyChanged(nameof(SelectedEmailBody));
+        OnPropertyChanged(nameof(EmailBodyDisplay));
+        OnPropertyChanged(nameof(IsEmailEnglish));
+        OnPropertyChanged(nameof(TranslateButtonVisibility));
+    }
+
+    /// <summary>当前选中邮件的附件名列表（仅显示，点击时按需下载并打开）。</summary>
+    public ObservableCollection<string> SelectedEmailAttachments { get; } = new();
+
+    /// <summary>当前选中邮件是否有附件（控制附件列表显隐）。</summary>
+    public bool HasAttachments => SelectedEmailAttachments.Count > 0;
+
+    /// <summary>当前选中邮件无附件（控制“（无附件）”提示显隐，让附件区始终可见）。</summary>
+    public bool HasNoAttachments => SelectedEmailAttachments.Count == 0;
+
+    /// <summary>已尝试过“按需回填附件元数据”的邮件 Id（避免无附件的邮件每次选中都重复调 Zoho API）。</summary>
+    private readonly HashSet<long> _attachmentsChecked = new();
+
+    private void RefreshSelectedAttachments()
+    {
+        SelectedEmailAttachments.Clear();
+        var atts = SelectedEmail?.Email.Attachments;
+        if (atts != null)
+            foreach (var a in atts)
+                if (!string.IsNullOrWhiteSpace(a.Name))
+                    SelectedEmailAttachments.Add(a.Name);
+        OnPropertyChanged(nameof(HasAttachments));
+        OnPropertyChanged(nameof(HasNoAttachments));
+        // 历史 Zoho 邮件（增量同步不重下，无附件元数据）：选中时按需回填一次附件名
+        var id = SelectedEmail?.Email.Id ?? 0;
+        if (id > 0 && (atts?.Count ?? 0) == 0 && _attachmentsChecked.Add(id))
+            _ = EnsureAttachmentsAsync(id);
+    }
+
+    /// <summary>后台回填选中邮件的附件元数据；完成后若用户仍停留该邮件则刷新附件区显示。</summary>
+    private async Task EnsureAttachmentsAsync(long emailId)
+    {
+        var atts = await Task.Run(() => _workflow.EnsureAttachments(emailId));
+        if (atts == null)
+        {
+            // 回填失败（如 Zoho 限流/网络）：移除“已尝试”标记，允许下次选中时重试
+            _attachmentsChecked.Remove(emailId);
+            return;
+        }
+        if (atts.Count == 0) return; // 确认无附件，保留标记不再重复调用
+        if (SelectedEmail?.Email.Id != emailId) return; // 用户已切换邮件，不打扰
+        RefreshSelectedAttachments();
     }
 
     public string SelectedThreadHeader => SelectedThread?.Header ?? "未选择工单";
@@ -353,6 +462,8 @@ public class MainViewModel : ViewModelBase
     public ICommand SubmitTicketCommand { get; }
     public ICommand RegenerateAiSummaryCommand { get; }
     public ICommand FontSettingsCommand { get; }
+    public ICommand OpenAttachmentCommand { get; }
+    public ICommand SaveAttachmentCommand { get; }
 
     /// <summary>跳转新邮件的请求（由主窗口订阅执行 TreeView 滚动选中）。</summary>
     public event Action? JumpToNewMailRequested;
@@ -374,6 +485,74 @@ public class MainViewModel : ViewModelBase
         SubmitTicketCommand = new RelayCommand(_ => OpenSubmitTicket());
         RegenerateAiSummaryCommand = new RelayCommand(async _ => await RegenerateSelectedThreadStatusAsync());
         FontSettingsCommand = new RelayCommand(_ => OpenFontSettings());
+        OpenAttachmentCommand = new RelayCommand(async p => await OpenAttachmentAsync(p as string));
+        SaveAttachmentCommand = new RelayCommand(async p => await SaveAttachmentAsync(p as string));
+    }
+
+    /// <summary>点击附件：下载到缓存目录并用系统默认应用打开（未下载前仅存文件名，不占用存储）。</summary>
+    private async Task OpenAttachmentAsync(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return;
+        var emailId = SelectedEmail?.Email.Id ?? 0;
+        if (emailId <= 0)
+        {
+            StatusText = "未选中邮件，无法下载附件";
+            return;
+        }
+        StatusText = $"正在下载附件：{name} …";
+        try
+        {
+            var path = await Task.Run(() => _workflow.DownloadAttachment(emailId, name));
+            if (string.IsNullOrEmpty(path))
+            {
+                StatusText = $"附件下载失败：{name}";
+                return;
+            }
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+            StatusText = $"已打开附件：{name}";
+        }
+        catch (Exception ex)
+        {
+            App.Log("OpenAttachment", ex);
+            StatusText = $"打开附件失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>右键“保存”：弹出另存为对话框，把附件下载到指定位置（已缓存则直接复制）。</summary>
+    private async Task SaveAttachmentAsync(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return;
+        var emailId = SelectedEmail?.Email.Id ?? 0;
+        if (emailId <= 0)
+        {
+            StatusText = "未选中邮件，无法保存附件";
+            return;
+        }
+        var dlg = new SaveFileDialog
+        {
+            Title = "保存附件",
+            FileName = name,
+            Filter = "所有文件 (*.*)|*.*",
+            OverwritePrompt = true
+        };
+        if (dlg.ShowDialog() != true) return;
+        StatusText = $"正在保存附件：{name} …";
+        try
+        {
+            var path = await Task.Run(() => _workflow.DownloadAttachment(emailId, name));
+            if (string.IsNullOrEmpty(path))
+            {
+                StatusText = $"附件下载失败：{name}";
+                return;
+            }
+            File.Copy(path, dlg.FileName, overwrite: true);
+            StatusText = $"已保存附件：{dlg.FileName}";
+        }
+        catch (Exception ex)
+        {
+            App.Log("SaveAttachment", ex);
+            StatusText = $"保存附件失败：{ex.Message}";
+        }
     }
 
     // ---- 多线索选择（Ctrl/Shift 多选）与批量设置产品/客户 ----
@@ -835,13 +1014,22 @@ public class MainViewModel : ViewModelBase
         win.ShowDialog();
     }
 
-    /// <summary>打开“邮件字体设置”窗口（统一应用于 邮件正文 与 签名）。</summary>
+    /// <summary>打开“邮件字体设置”窗口（统一应用于 详情页邮件正文 与 签名）。</summary>
     private void OpenFontSettings()
     {
         var win = new Views.FontSettingsWindow(_workflow);
         if (Application.Current.MainWindow is { IsVisible: true } owner)
             win.Owner = owner;
-        win.ShowDialog();
+        // 保存后：重新读取配置并刷新详情页正文字体/颜色（正文立即重渲染）
+        if (win.ShowDialog() == true)
+        {
+            _workflow.LoadConfig();
+            OnPropertyChanged(nameof(EmailFontFamily));
+            OnPropertyChanged(nameof(EmailFontSize));
+            OnPropertyChanged(nameof(EmailFontColor));
+            OnPropertyChanged(nameof(EmailFontColorBrush));
+            OnPropertyChanged(nameof(EmailBodyDisplay)); // 触发正文重渲染（颜色更新）
+        }
     }
 
     private void OpenSettings()
@@ -973,6 +1161,19 @@ public class MainViewModel : ViewModelBase
                 RefreshSubtreeStar(root);
         }
         // 不因星标变化立即重建“仅星标”过滤视图：取消星标后线索仍保留显示，直到切换开关/搜索/下次重建
+    }
+
+    /// <summary>切换某封邮件的“忽略”状态：忽略后不加入任何线索，收集到“被忽略的邮件”分组；再点一次取消忽略。</summary>
+    public void ToggleIgnoreEmail(EmailNodeViewModel ev)
+    {
+        var id = ev.Email.Id;
+        var ignore = !ev.Email.Ignored;
+        _workflow.SetEmailIgnored(id, ignore); // 落库 + 重建线程表（被忽略邮件退出原线索）
+        StatusText = ignore
+            ? "已忽略该邮件（可在“视图”→“显示被忽略的邮件”中查看）"
+            : "已取消忽略该邮件";
+        _threads = _workflow.LoadThreads();
+        RebuildTree();
     }
 
     /// <summary>递归刷新星标显示（批量切换线索星标后调用）。</summary>
@@ -1128,7 +1329,40 @@ public class MainViewModel : ViewModelBase
                 customer.ExpandedByDefault = false;
             list.Add(customer);
         }
+        // “显示被忽略的邮件”勾选且存在被忽略邮件时，在树最底部追加“已忽略的邮件”大类
+        RebuildIgnoredGroup();
         ReplaceCustomers(list);
+    }
+
+    /// <summary>重建“已忽略的邮件”顶层大类：按当前开关与最新忽略集合刷新，每封被忽略邮件直接挂在大类下。</summary>
+    private void RebuildIgnoredGroup()
+    {
+        _ignoredGroups.Clear();
+        if (!ShowIgnored) return;
+        var ignored = _workflow.LoadIgnoredEmails();
+        if (ignored.Count == 0) return;
+
+        var support = _workflow.Config.MonitoredAddresses;
+        var self = _workflow.Config.ImapUsername;
+        var group = new IgnoredGroupViewModel { ExpandedByDefault = true };
+        foreach (var email in ignored)
+        {
+            // 每封被忽略邮件包成独立“线索”（不参与任何真实线程），直接挂在大类下
+            var thread = new TicketThread
+            {
+                Emails = new List<EmailMessage> { email },
+                DisplayRoots = new List<ThreadNode> { new(email, 0) },
+                FirstActivity = email.DateSent,
+                LastActivity = email.DateSent
+            };
+            var owner = new ThreadViewModel(thread, support, self);
+            foreach (var root in owner.Children)
+            {
+                root.ExpandedByDefault = false; // 被忽略邮件无子树，无需展开
+                group.Emails.Add(root);
+            }
+        }
+        _ignoredGroups.Add(group);
     }
 
     /// <summary>视为“已结束、无需继续关注”的线索状态：已完成/已解决、已关闭、合并或拆分为其他工单。</summary>
@@ -1194,6 +1428,10 @@ public class MainViewModel : ViewModelBase
                 UpdateExistingThread(existing, t, support, self);
         }
 
+        // 2.5 “已忽略的邮件”大类：第 1 步只清理客户分组里的线索，不影响顶层忽略大类，
+        //     这里按当前开关与最新忽略集合整体重建（忽略集合只由用户操作改变，同步不会增删，直接重建最稳妥）
+        RebuildIgnoredGroup();
+
         // 3. 恢复选中（节点可能被替换/移动，用稳定标识重新定位）
         RestoreSelectionAfterMerge(selEmailId, selThreadRootId);
         SelectionRestoredAfterMerge?.Invoke(); // 通知主窗口在 TreeView 中同步高亮选中
@@ -1215,7 +1453,7 @@ public class MainViewModel : ViewModelBase
         }
     }
 
-    /// <summary>在整棵树中按邮件 Id 查找节点（含非根邮件）。</summary>
+    /// <summary>在整棵树中按邮件 Id 查找节点（含非根邮件；含“已忽略的邮件”大类中的被忽略邮件）。</summary>
     private EmailNodeViewModel? FindEmailNodeById(long emailId)
     {
         foreach (var cust in Customers)
@@ -1223,6 +1461,9 @@ public class MainViewModel : ViewModelBase
                 foreach (var root in prod.Threads)
                     if (FindInSubtree(root, emailId) is { } n)
                         return n;
+        foreach (var g in IgnoredGroups)
+            foreach (var e in g.Emails)
+                if (e.Email.Id == emailId) return e;
         return null;
     }
 

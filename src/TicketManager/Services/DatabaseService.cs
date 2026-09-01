@@ -74,7 +74,11 @@ public class DatabaseService : IDisposable
                 Product TEXT NOT NULL DEFAULT '',
                 Enterprise TEXT NOT NULL DEFAULT '',
                 FaultDescription TEXT NOT NULL DEFAULT '',
-                IsNew INTEGER NOT NULL DEFAULT 0
+                IsNew INTEGER NOT NULL DEFAULT 0,
+                Ignored INTEGER NOT NULL DEFAULT 0,
+                Attachments TEXT NOT NULL DEFAULT '',
+                ZohoFolderId INTEGER NOT NULL DEFAULT 0,
+                InlineImages TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS IX_Emails_MessageId ON Emails(MessageId);
             CREATE INDEX IF NOT EXISTS IX_Emails_ThreadId ON Emails(ThreadId);
@@ -118,7 +122,16 @@ public class DatabaseService : IDisposable
             // （多为 AI 分析不出的厂商客服邮件）在之后每次同步都被重新交给 AI
             conn.Execute("UPDATE Emails SET MetaAnalyzed = 1 WHERE MetaAnalyzed = 0");
         }        if (!emailCols.Contains("Starred"))
-            conn.Execute("ALTER TABLE Emails ADD COLUMN Starred INTEGER NOT NULL DEFAULT 0");        var threadCols = new HashSet<string>(conn.Query<string>(
+            conn.Execute("ALTER TABLE Emails ADD COLUMN Starred INTEGER NOT NULL DEFAULT 0");
+        if (!emailCols.Contains("Ignored"))
+            conn.Execute("ALTER TABLE Emails ADD COLUMN Ignored INTEGER NOT NULL DEFAULT 0");
+        if (!emailCols.Contains("Attachments"))
+            conn.Execute("ALTER TABLE Emails ADD COLUMN Attachments TEXT NOT NULL DEFAULT ''");
+        if (!emailCols.Contains("ZohoFolderId"))
+            conn.Execute("ALTER TABLE Emails ADD COLUMN ZohoFolderId INTEGER NOT NULL DEFAULT 0");
+        if (!emailCols.Contains("InlineImages"))
+            conn.Execute("ALTER TABLE Emails ADD COLUMN InlineImages TEXT NOT NULL DEFAULT ''");
+        var threadCols = new HashSet<string>(conn.Query<string>(
             "SELECT name FROM pragma_table_info('Threads')"));
         if (!threadCols.Contains("StatusReason"))
             conn.Execute("ALTER TABLE Threads ADD COLUMN StatusReason TEXT NOT NULL DEFAULT ''");
@@ -224,7 +237,10 @@ public class DatabaseService : IDisposable
             e.Subject, e.AiTitle,
             DateSent = e.DateSent.ToString("o"),
             DateReceived = e.DateReceived.ToString("o"),
-            e.BodyText, e.ContentHash, e.TicketNumber, e.Product, e.Enterprise, e.FaultDescription
+            e.BodyText, e.ContentHash, e.TicketNumber, e.Product, e.Enterprise, e.FaultDescription,
+            e.ZohoFolderId,
+            Attachments = System.Text.Json.JsonSerializer.Serialize(e.Attachments),
+            InlineImages = System.Text.Json.JsonSerializer.Serialize(e.InlineImages)
         };
 
         if (existing != null)
@@ -237,7 +253,8 @@ public class DatabaseService : IDisposable
                     ToAddresses=@ToAddresses, CcAddresses=@CcAddresses, Subject=@Subject, AiTitle=@AiTitle,
                     DateSent=@DateSent, DateReceived=@DateReceived, BodyText=@BodyText, ContentHash=@ContentHash,
                     TicketNumber=@TicketNumber, Product=@Product, Enterprise=@Enterprise,
-                    FaultDescription=@FaultDescription
+                    FaultDescription=@FaultDescription, ZohoFolderId=@ZohoFolderId, Attachments=@Attachments,
+                    InlineImages=@InlineImages
                 WHERE Id=@id
                 """, p);
             e.Id = existing.Value;
@@ -247,10 +264,12 @@ public class DatabaseService : IDisposable
         e.Id = conn.ExecuteScalar<long>("""
             INSERT INTO Emails (Folder, Uid, MessageId, InReplyTo, "References", ZohoMessageId, ZohoThreadId,
                 FromAddress, FromName, ToAddresses, CcAddresses, Subject, AiTitle, DateSent, DateReceived,
-                BodyText, ContentHash, TicketNumber, Product, Enterprise, FaultDescription, IsNew)
+                BodyText, ContentHash, TicketNumber, Product, Enterprise, FaultDescription, IsNew,
+                ZohoFolderId, Attachments, InlineImages)
             VALUES (@Folder, @Uid, @MessageId, @InReplyTo, @References, @ZohoMessageId, @ZohoThreadId,
                 @FromAddress, @FromName, @ToAddresses, @CcAddresses, @Subject, @AiTitle, @DateSent, @DateReceived,
-                @BodyText, @ContentHash, @TicketNumber, @Product, @Enterprise, @FaultDescription, 1);
+                @BodyText, @ContentHash, @TicketNumber, @Product, @Enterprise, @FaultDescription, 1,
+                @ZohoFolderId, @Attachments, @InlineImages);
             SELECT last_insert_rowid();
             """, p);
         return e.Id;
@@ -271,7 +290,8 @@ public class DatabaseService : IDisposable
         var rows = conn.Query("""
             SELECT Id, Folder, Uid, MessageId, InReplyTo, "References", ZohoMessageId, ZohoThreadId,
                    FromAddress, FromName, ToAddresses, CcAddresses, Subject, AiTitle,
-                   DateSent, DateReceived, ThreadId, TicketNumber, Product, Enterprise, FaultDescription, IsNew, Starred
+                   DateSent, DateReceived, ThreadId, TicketNumber, Product, Enterprise, FaultDescription,
+                   IsNew, Starred, Ignored, Attachments, ZohoFolderId, InlineImages
             FROM Emails
             """).ToList();
         return rows.Select(MapEmailLight).ToList();
@@ -285,9 +305,10 @@ public class DatabaseService : IDisposable
         var rows = conn.Query("""
             SELECT Id, Folder, Uid, MessageId, InReplyTo, "References", ZohoMessageId, ZohoThreadId,
                    FromAddress, FromName, ToAddresses, CcAddresses, Subject, AiTitle,
-                   DateSent, DateReceived, ThreadId, TicketNumber, Product, Enterprise, FaultDescription, IsNew, Starred
+                   DateSent, DateReceived, ThreadId, TicketNumber, Product, Enterprise, FaultDescription,
+                   IsNew, Starred, Ignored, Attachments, ZohoFolderId, InlineImages
             FROM Emails
-            WHERE (Product = '' OR Enterprise = '') AND MetaAnalyzed = 0
+            WHERE (Product = '' OR Enterprise = '') AND MetaAnalyzed = 0 AND Ignored = 0
             """).ToList();
         return rows.Select(MapEmailLight).ToList();
     }
@@ -312,7 +333,7 @@ public class DatabaseService : IDisposable
     public List<EmailMessage> GetEmailsPendingTitle()
     {
         using var conn = Open();
-        var rows = conn.Query("SELECT * FROM Emails WHERE AiTitle = '' ORDER BY DateReceived").ToList();
+        var rows = conn.Query("SELECT * FROM Emails WHERE AiTitle = '' AND Ignored = 0 ORDER BY DateReceived").ToList();
         return rows.Select(MapEmail).ToList();
     }
 
@@ -633,6 +654,44 @@ public class DatabaseService : IDisposable
         conn.Execute("UPDATE Emails SET Starred = @s WHERE Id = @id", new { s = starred ? 1 : 0, id });
     }
 
+    /// <summary>设置/清除某封邮件的“忽略”标记（被忽略的邮件不加入任何线索）。</summary>
+    public void SetEmailIgnored(long id, bool ignored)
+    {
+        using var conn = Open();
+        conn.Execute("UPDATE Emails SET Ignored = @i WHERE Id = @id", new { i = ignored ? 1 : 0, id });
+    }
+
+    /// <summary>回填某封邮件的附件元数据（按需拉取附件名后写入）。</summary>
+    public void UpdateEmailAttachments(long id, List<EmailAttachment> attachments)
+    {
+        using var conn = Open();
+        conn.Execute("UPDATE Emails SET Attachments = @a WHERE Id = @id",
+            new { id, a = System.Text.Json.JsonSerializer.Serialize(attachments) });
+    }
+
+    /// <summary>回填某封邮件的 Zoho folderId（历史邮件为 0，按文件夹名匹配后写入）。</summary>
+    public void UpdateEmailZohoFolderId(long id, long folderId)
+    {
+        using var conn = Open();
+        conn.Execute("UPDATE Emails SET ZohoFolderId = @fid WHERE Id = @id", new { id, fid = folderId });
+    }
+
+    /// <summary>回填某封邮件的正文与内嵌图片文件名（历史邮件重新提取内嵌图片后写入）。</summary>
+    public void UpdateEmailBodyAndInline(long id, string bodyText, List<string> inlineImages)
+    {
+        using var conn = Open();
+        conn.Execute("UPDATE Emails SET BodyText = @body, InlineImages = @imgs WHERE Id = @id",
+            new { id, body = bodyText, imgs = System.Text.Json.JsonSerializer.Serialize(inlineImages) });
+    }
+
+    /// <summary>加载所有被忽略的邮件（新到旧排序，供“被忽略的邮件”分组展示）。</summary>
+    public List<EmailMessage> LoadIgnoredEmails()
+    {
+        using var conn = Open();
+        var rows = conn.Query("SELECT * FROM Emails WHERE Ignored = 1 ORDER BY DateReceived DESC").ToList();
+        return rows.Select(MapEmail).ToList();
+    }
+
     /// <summary>含星标邮件的线索 Id 集合（供“仅星标”过滤）。</summary>
     public HashSet<long> GetStarredThreadIds()
     {
@@ -706,7 +765,11 @@ public class DatabaseService : IDisposable
         Enterprise = (string)r.Enterprise,
         FaultDescription = (string)r.FaultDescription,
         IsNew = (long)r.IsNew != 0,
-        Starred = (long)r.Starred != 0
+        Starred = (long)r.Starred != 0,
+        Ignored = (long)r.Ignored != 0,
+        Attachments = DeserializeAttachments((string)r.Attachments),
+        InlineImages = DeserializeStringList((string)r.InlineImages),
+        ZohoFolderId = (long)r.ZohoFolderId
     };
 
     private static EmailMessage MapEmail(dynamic r) => new()
@@ -735,8 +798,32 @@ public class DatabaseService : IDisposable
         Enterprise = (string)r.Enterprise,
         FaultDescription = (string)r.FaultDescription,
         IsNew = (long)r.IsNew != 0,
-        Starred = (long)r.Starred != 0
+        Starred = (long)r.Starred != 0,
+        Ignored = (long)r.Ignored != 0,
+        Attachments = DeserializeAttachments((string)r.Attachments),
+        InlineImages = DeserializeStringList((string)r.InlineImages),
+        ZohoFolderId = (long)r.ZohoFolderId
     };
+
+    /// <summary>反序列化字符串列表（JSON 数组，兼容空串/旧数据）。</summary>
+    private static List<string> DeserializeStringList(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return new List<string>();
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<List<string>>(json) ?? new List<string>();
+        }
+        catch { return new List<string>(); }
+    }
+    private static List<EmailAttachment> DeserializeAttachments(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return new List<EmailAttachment>();
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<List<EmailAttachment>>(json) ?? new List<EmailAttachment>();
+        }
+        catch { return new List<EmailAttachment>(); }
+    }
 
     private static DateTimeOffset ParseDate(string s)
         => DateTimeOffset.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var d)

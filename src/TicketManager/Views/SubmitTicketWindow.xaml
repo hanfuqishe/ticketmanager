@@ -9,13 +9,14 @@
         <views:AttachmentDisplayConverter x:Key="AttachDisp"/>
     </Window.Resources>
     <DockPanel Margin="14">
-        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,12,0,0">
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button Content="发送" Width="90" Padding="8,4" Command="{Binding SendCommand}" IsDefault="True"/>
+                <Button Content="取消" Width="90" Padding="8,4" Margin="10,0,0,0" IsCancel="True"/>
+            </StackPanel>
             <TextBlock Text="{Binding StatusText}" VerticalAlignment="Center" Foreground="#C62828"
-                       TextWrapping="Wrap" MaxWidth="400" FontSize="12"/>
-            <Button Content="发送" Width="90" Padding="8,4" Command="{Binding SendCommand}" IsDefault="True"
-                    HorizontalAlignment="Right"/>
-            <Button Content="取消" Width="90" Padding="8,4" Margin="10,0,0,0" IsCancel="True"/>
-        </StackPanel>
+                       TextWrapping="Wrap" MaxWidth="380" FontSize="12" Margin="0,0,12,0"/>
+        </DockPanel>
 
         <Grid>
             <Grid.ColumnDefinitions>
@@ -77,10 +78,10 @@
                        FontWeight="SemiBold" TextWrapping="Wrap" Margin="8,4" VerticalAlignment="Center"/>
 
             <TextBlock Grid.Row="7" Grid.Column="0" Text="详情：" VerticalAlignment="Top" Margin="0,6,0,0"/>
-            <TextBox Grid.Row="7" Grid.Column="1" Text="{Binding Body}" AcceptsReturn="True" TextWrapping="Wrap"
+            <TextBox x:Name="BodyBox" Grid.Row="7" Grid.Column="1" Text="{Binding Body}" AcceptsReturn="True" TextWrapping="Wrap"
                      VerticalScrollBarVisibility="Auto" Margin="8,4" Padding="4" MinHeight="90"
                      FontFamily="{Binding EmailFontFamily}" FontSize="{Binding EmailFontSize}"
-                     ToolTip="邮件正文，可填写故障详细描述"/>
+                     ToolTip="邮件正文；粘贴图片或文件会自动添加为附件"/>
 
             <TextBlock Grid.Row="8" Grid.Column="0" Text="附件：" VerticalAlignment="Top" Margin="0,6,0,0"/>
             <DockPanel Grid.Row="8" Grid.Column="1" Margin="8,4">

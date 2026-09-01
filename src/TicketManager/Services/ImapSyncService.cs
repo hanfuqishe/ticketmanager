@@ -1,3 +1,4 @@
+using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using MailKit;
@@ -198,6 +199,29 @@ public class ImapSyncService
         }
     }
 
+    /// <summary>按 文件夹+UID+附件名 下载附件内容（重连邮箱取该邮件，按文件名匹配附件部分）。失败返回 null。</summary>
+    public byte[]? DownloadAttachment(string folderName, uint uid, string attachmentName)
+    {
+        var socketOptions = _config.ImapUseSsl ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.Auto;
+        using var client = new ImapClient();
+        client.ProxyClient = CreateProxy();
+        client.Connect(_config.ImapHost, _config.ImapPort, socketOptions);
+        client.Authenticate(_config.ImapUsername, _config.ImapPassword);
+        var folder = client.GetFolder(folderName);
+        folder.Open(FolderAccess.ReadOnly);
+        var msg = folder.GetMessage(new UniqueId(uid));
+        foreach (var att in msg.Attachments)
+        {
+            if (att is MimePart part && string.Equals(part.FileName, attachmentName, StringComparison.OrdinalIgnoreCase))
+            {
+                using var ms = new MemoryStream();
+                part.Content.DecodeTo(ms);
+                return ms.ToArray();
+            }
+        }
+        return null;
+    }
+
     /// <summary>
     /// 解析“已发送”文件夹：优先使用配置名；否则连接服务器按 Sent 属性递归扫描自动识别。
     /// 找不到返回 null。
@@ -257,7 +281,34 @@ public class ImapSyncService
 
     private static EmailMessage ToEmailMessage(UniqueId uid, string folder, MimeMessage msg)
     {
-        var body = GetBodyText(msg.Body) ?? "";
+        // 正文：HTML 的 <img cid> 保留为占位符，收集 cid 用于提取内嵌图片
+        var imageCids = new List<string>();
+        var body = GetBodyTextKeepImages(msg.Body, imageCids) ?? "";
+        var inlineFiles = new List<string>();
+        var inlineBytes = new List<byte[]>();
+        if (imageCids.Count > 0)
+        {
+            // cid → MimePart 映射（ContentId 可能带尖括号）
+            var byCid = new Dictionary<string, MimePart>(StringComparer.OrdinalIgnoreCase);
+            foreach (var bp in msg.BodyParts)
+                if (bp is MimePart mp && !string.IsNullOrEmpty(mp.ContentId))
+                    byCid[mp.ContentId.Trim('<', '>')] = mp;
+            for (int i = 0; i < imageCids.Count; i++)
+            {
+                inlineFiles.Add(""); // 默认无图，找到则填充文件名
+                if (imageCids[i].Length == 0 || !byCid.TryGetValue(imageCids[i], out var part)) continue;
+                using var ms = new MemoryStream();
+                part.Content.DecodeTo(ms);
+                var ext = ExtensionFor(part.ContentType.MimeType);
+                inlineFiles[i] = $"img{i}{ext}";
+                inlineBytes.Add(ms.ToArray());
+            }
+        }
+        // 附件：仅记录文件名（默认不下载内容；点击附件时按需下载）
+        var attachments = new List<EmailAttachment>();
+        foreach (var att in msg.Attachments)
+            if (att is MimePart part && !string.IsNullOrEmpty(part.FileName))
+                attachments.Add(new EmailAttachment(part.FileName, ""));
         return new EmailMessage
         {
             Folder = folder,
@@ -273,12 +324,41 @@ public class ImapSyncService
             DateSent = msg.Date,
             DateReceived = msg.Date,
             BodyText = body,
-            ContentHash = ComputeHash(body)
+            ContentHash = ComputeHash(body),
+            Attachments = attachments,
+            InlineImages = inlineFiles,
+            InlineImageBytes = inlineBytes.Count > 0 ? inlineBytes : null
+        };
+    }
+
+    /// <summary>MIME 类型 → 文件扩展名（内嵌图片保存用）。</summary>
+    private static string ExtensionFor(string mimeType)
+    {
+        return mimeType.ToLowerInvariant() switch
+        {
+            "image/png" => ".png",
+            "image/jpeg" => ".jpg",
+            "image/gif" => ".gif",
+            "image/bmp" => ".bmp",
+            "image/webp" => ".webp",
+            "image/tiff" => ".tif",
+            _ => ".png"
         };
     }
 
     /// <summary>递归提取纯文本正文（不含附件）。优先 text/plain，退化到 text/html 去标签。</summary>
     private static string GetBodyText(MimeEntity? entity)
+    {
+        return GetBodyTextCore(entity, null);
+    }
+
+    /// <summary>递归提取正文，同时收集内嵌图片 cid（HTML 的 &lt;img cid&gt; 替换为占位符）。</summary>
+    private static string GetBodyTextKeepImages(MimeEntity? entity, List<string> imageCids)
+    {
+        return GetBodyTextCore(entity, imageCids);
+    }
+
+    private static string GetBodyTextCore(MimeEntity? entity, List<string>? imageCids)
     {
         if (entity == null) return "";
         switch (entity)
@@ -286,7 +366,7 @@ public class ImapSyncService
             case TextPart text when text.ContentType.MediaSubtype.Equals("plain", StringComparison.OrdinalIgnoreCase):
                 return text.Text ?? "";
             case TextPart html when html.ContentType.MediaSubtype.Equals("html", StringComparison.OrdinalIgnoreCase):
-                return StripHtml(html.Text ?? "");
+                return imageCids != null ? StripHtmlKeepImages(html.Text ?? "", imageCids) : StripHtml(html.Text ?? "");
             case MultipartAlternative alt:
             {
                 // 优先纯文本
@@ -295,15 +375,15 @@ public class ImapSyncService
                 if (plain != null) return plain.Text ?? "";
                 var htmlPart = alt.OfType<TextPart>()
                     .FirstOrDefault(p => p.ContentType.MediaSubtype.Equals("html", StringComparison.OrdinalIgnoreCase));
-                if (htmlPart != null) return StripHtml(htmlPart.Text ?? "");
-                return string.Join("\n", alt.Select(GetBodyText));
+                if (htmlPart != null) return imageCids != null ? StripHtmlKeepImages(htmlPart.Text ?? "", imageCids) : StripHtml(htmlPart.Text ?? "");
+                return string.Join("\n", alt.Select(x => GetBodyTextCore(x, imageCids)));
             }
             case MultipartRelated related:
-                return GetBodyText(related.Root);
+                return GetBodyTextCore(related.Root, imageCids);
             case Multipart mp:
             {
                 var parts = mp.OfType<TextPart>().Select(p => p.Text ?? "").Where(t => t.Length > 0).ToList();
-                return parts.Count > 0 ? string.Join("\n", parts) : string.Join("\n", mp.Select(GetBodyText));
+                return parts.Count > 0 ? string.Join("\n", parts) : string.Join("\n", mp.Select(x => GetBodyTextCore(x, imageCids)));
             }
             default:
                 return "";
@@ -323,6 +403,26 @@ public class ImapSyncService
         html = System.Text.RegularExpressions.Regex.Replace(html, @"[ \t]+", " ");
         html = System.Text.RegularExpressions.Regex.Replace(html, @"\n{3,}", "\n\n");
         return html.Trim();
+    }
+
+    /// <summary>HTML 转纯文本，但 <img cid> 保留为占位符（收集 cid 到列表），使正文内嵌图片能在对应位置显示。</summary>
+    private static string StripHtmlKeepImages(string html, List<string> imageCids)
+    {
+        if (string.IsNullOrEmpty(html)) return "";
+        // <img src="cid:xxx"> → 占位符；非 cid 的外链图片直接删除标签（保持原行为）
+        html = System.Text.RegularExpressions.Regex.Replace(html,
+            @"(?i)<img[^>]*\bsrc\s*=\s*[""']?(?<src>[^""'\s>]+)[""']?[^>]*>", m =>
+            {
+                var src = m.Groups["src"].Value;
+                if (src.StartsWith("cid:", StringComparison.OrdinalIgnoreCase))
+                {
+                    imageCids.Add(src[4..]);
+                    return TicketManager.Models.InlineImage.Placeholder(imageCids.Count - 1);
+                }
+                return "";
+            });
+        html = StripHtml(html);
+        return html;
     }
 
     private static string ComputeHash(string text)

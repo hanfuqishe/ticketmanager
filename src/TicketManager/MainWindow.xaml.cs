@@ -9,6 +9,7 @@ using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using ClosedXML.Excel;
 using Microsoft.Win32;
@@ -27,11 +28,28 @@ public partial class MainWindow : Window
     private IntPtr _trayBadgeHIcon; // 当前角标图标的句柄（需 DestroyIcon 释放）
     private bool _trayHintShown;
 
+    // “忽略此邮件”/“重新纳入分析”共用菜单项的两种状态图标：
+    // 忽略 = 眼睛划掉（红）；重新纳入分析 = 眼睛+加号（绿，恢复关注语义）
+    private static readonly Geometry IconGeometryIgnore =
+        Geometry.Parse("M11.83,9L15,12.16C15,12.11 15,12.05 15,12A3,3 0 0,0 12,9C11.94,9 11.89,9 11.83,9M7.53,9.8L9.08,11.35C9.03,11.56 9,11.77 9,12A3,3 0 0,0 12,15C12.22,15 12.44,14.97 12.65,14.92L14.2,16.47C13.53,16.8 12.79,17 12,17A5,5 0 0,1 7,12C7,11.21 7.2,10.47 7.53,9.8M2,4.27L4.28,6.55L4.73,7C3.08,8.3 1.78,10 1,12C2.73,16.39 7,19.5 12,19.5C13.55,19.5 15.03,19.2 16.38,18.66L16.81,19.08L19.73,22L21,20.73L3.27,3M12,7A5,5 0 0,1 17,12C17,12.64 16.87,13.26 16.64,13.82L19.57,16.75C21.07,15.5 22.27,13.86 23,12C21.27,7.61 17,4.5 12,4.5C10.6,4.5 9.26,4.75 8,5.2L10.17,7.35C10.74,7.13 11.35,7 12,7Z");
+    private static readonly Geometry IconGeometryRestore =
+        Geometry.Parse("M12,4.5C7,4.5 2.73,7.61 1,12C2.73,16.39 7,19.5 12,19.5C12.36,19.5 12.72,19.5 13.08,19.45C13.03,19.13 13,18.82 13,18.5C13,17.94 13.08,17.38 13.24,16.84C12.83,16.94 12.42,17 12,17C9.24,17 7,14.76 7,12C7,9.24 9.24,7 12,7C14.76,7 17,9.24 17,12C17,12.29 16.97,12.59 16.92,12.88C17.58,12.63 18.29,12.5 19,12.5C20.17,12.5 21.31,12.84 22.37,13.5C22.82,12.67 23,11.33 23,11.33C21.27,7.61 17,4.5 12,4.5M12,9A3,3 0 0,0 9,12A3,3 0 0,0 12,15A3,3 0 0,0 15,12A3,3 0 0,0 12,9M18,14.5V17.5H15V19.5H18V22.5H20V19.5H23V17.5H20V14.5H18Z");
+    private static readonly Brush IconBrushIgnore = new SolidColorBrush(Color.FromRgb(0xD9, 0x53, 0x4F)); // 红：忽略
+    private static readonly Brush IconBrushRestore = new SolidColorBrush(Color.FromRgb(0x43, 0xA0, 0x47)); // 绿：恢复关注
+
     public MainWindow()
     {
         InitializeComponent();
         _vm = new MainViewModel(App.Workflow);
         DataContext = _vm;
+        // 树顶层 = 正常客户分组（Customers）+ 树最底部的“已忽略的邮件”大类（IgnoredGroups）。
+        // 必须在 DataContext 就绪后于代码中构建 CompositeCollection 并直接赋集合引用：
+        // XAML 内联绑定时 InitializeComponent 阶段 DataContext 尚为 null，CollectionContainer 绑定会失效，
+        // 表现为整棵客户树空白。代码中构建则两集合的增删各自实时反映，且不受绑定时机影响。
+        var treeItems = new System.Windows.Data.CompositeCollection();
+        treeItems.Add(new System.Windows.Data.CollectionContainer { Collection = _vm.Customers });
+        treeItems.Add(new System.Windows.Data.CollectionContainer { Collection = _vm.IgnoredGroups });
+        TreeView.ItemsSource = treeItems;
         _vm.Load();
         SetupTray();
         _vm.PropertyChanged += (_, e) =>
@@ -45,7 +63,8 @@ public partial class MainWindow : Window
         _vm.AutoSyncAndListen(); // 启动后自动同步，随后进入自动收取新邮件模式
     }
 
-    /// <summary>把正文渲染进 RichTextBox：当前正文黑色，引用默认折叠为可展开链接，展开后灰色斜体显示。</summary>
+    /// <summary>把正文渲染进 RichTextBox：当前正文黑色，引用默认折叠为可展开链接，展开后灰色斜体显示。
+    /// 正文中的内嵌图片占位符会替换为实际图片（文本保持纯文本风格）。</summary>
     private void RenderEmailBody()
     {
         if (EmailBodyBox == null) return;
@@ -62,8 +81,7 @@ public partial class MainWindow : Window
         var quote = idx > 0 ? text[idx..] : "";
 
         var doc = new FlowDocument { PagePadding = new Thickness(0) };
-        var bodyPara = new Paragraph(new Run(normal)) { Foreground = Brushes.Black, LineHeight = 1.25 };
-        doc.Blocks.Add(bodyPara);
+        doc.Blocks.Add(BuildBodyParagraph(normal, _vm.EmailFontColorBrush));
 
         if (!string.IsNullOrEmpty(quote))
         {
@@ -78,6 +96,65 @@ public partial class MainWindow : Window
         EmailBodyBox.Document = doc;
     }
 
+    /// <summary>把正文文本（含内嵌图片占位符）构建为段落：普通文字用 Run，占位符处插入图片。文本颜色由参数指定。</summary>
+    private Paragraph BuildBodyParagraph(string text, Brush foreground)
+    {
+        var para = new Paragraph { Foreground = foreground, LineHeight = 1.25 };
+        if (string.IsNullOrEmpty(text))
+        {
+            para.Inlines.Add(new Run(""));
+            return para;
+        }
+        var emailId = _vm.SelectedEmail?.Email.Id ?? 0;
+        var files = _vm.SelectedEmail?.Email.InlineImages ?? new List<string>();
+        int pos = 0;
+        foreach (System.Text.RegularExpressions.Match m in TicketManager.Models.InlineImage.Pattern.Matches(text))
+        {
+            if (m.Index > pos) para.Inlines.Add(new Run(text[pos..m.Index]));
+            if (int.TryParse(m.Groups[1].Value, out var idx) &&
+                emailId > 0 && idx >= 0 && idx < files.Count && !string.IsNullOrEmpty(files[idx]))
+            {
+                var path = TicketManager.Services.InlineImageStorage.FilePath(emailId, files[idx]);
+                if (File.Exists(path) && TryLoadImage(path) is Image img)
+                {
+                    para.Inlines.Add(new InlineUIContainer(img));
+                    pos = m.Index + m.Length;
+                    continue;
+                }
+            }
+            // 图片缺失/加载失败：忽略该占位符（不显示乱码）
+            pos = m.Index + m.Length;
+        }
+        if (pos < text.Length) para.Inlines.Add(new Run(text[pos..]));
+        return para;
+    }
+
+    /// <summary>加载图片文件为 Image 控件（内嵌图片展示，等比缩放，失败返回 null）。</summary>
+    private static Image? TryLoadImage(string path)
+    {
+        try
+        {
+            var bmp = new BitmapImage();
+            bmp.BeginInit();
+            bmp.UriSource = new Uri(path);
+            bmp.CacheOption = BitmapCacheOption.OnLoad;
+            bmp.EndInit();
+            bmp.Freeze();
+            return new Image
+            {
+                Source = bmp,
+                MaxWidth = 480,
+                MaxHeight = 480,
+                Margin = new Thickness(0, 4, 0, 4),
+                Stretch = Stretch.Uniform
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     /// <summary>点击“展开引用”按钮：把完整引用（含嵌套）以灰色斜体插入正文之后，并隐藏按钮。</summary>
     private void ExpandQuote_Click(object sender, RoutedEventArgs e)
     {
@@ -86,11 +163,9 @@ public partial class MainWindow : Window
         ExpandQuoteButton.Visibility = Visibility.Collapsed;
         if (string.IsNullOrEmpty(quote)) return;
         if (EmailBodyBox.Document is not FlowDocument doc) return;
-        var quotePara = new Paragraph(new Run(quote))
-        {
-            Foreground = new SolidColorBrush(Color.FromRgb(0x85, 0x85, 0x85)),
-            FontStyle = FontStyles.Italic
-        };
+        var gray = new SolidColorBrush(Color.FromRgb(0x85, 0x85, 0x85));
+        var quotePara = BuildBodyParagraph(quote, gray);
+        quotePara.FontStyle = FontStyles.Italic;
         doc.Blocks.Add(quotePara);
     }
 
@@ -155,7 +230,7 @@ public partial class MainWindow : Window
         var menu = new System.Windows.Forms.ContextMenuStrip();
         menu.Items.Add("显示主窗口", null, (_, _) => RestoreFromTray());
         menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
-        menu.Items.Add("退出", null, (_, _) => Close());
+        menu.Items.Add("退出", null, (_, _) => ExitApplication());
         _trayIcon.ContextMenuStrip = menu;
         // 单击左键即恢复主窗口（新邮件角标见 UpdateTrayBadge）
         _trayIcon.MouseClick += (_, e) =>
@@ -262,9 +337,27 @@ public partial class MainWindow : Window
         return IntPtr.Zero;
     }
 
+    /// <summary>是否真正退出程序（托盘/主菜单“退出”时置位）；为 false 时点关闭按钮只缩到托盘。</summary>
+    private bool _isRealClosing;
+
+    /// <summary>真正退出程序：置位退出标志后关闭窗口（区别于点击右上角 X 的“最小化到托盘”）。</summary>
+    private void ExitApplication()
+    {
+        _isRealClosing = true;
+        Close();
+    }
+
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
-        _vm.StopAutoSync(); // 关闭时停止后台自动收取
+        // 点击窗口关闭按钮（右上角 X）：不退出，改为最小化到托盘（后台仍监听新邮件）
+        if (!_isRealClosing)
+        {
+            e.Cancel = true;
+            WindowState = WindowState.Minimized; // 触发 OnStateChanged → Hide 到托盘
+            return;
+        }
+        // 真正退出（托盘/主菜单“退出”）：停止后台自动收取并清理托盘资源
+        _vm.StopAutoSync();
         _trayBadgeTimer?.Stop();
         _trayBadgeTimer = null;
         if (_trayBadgeHIcon != IntPtr.Zero) { DestroyIcon(_trayBadgeHIcon); _trayBadgeHIcon = IntPtr.Zero; }
@@ -299,8 +392,9 @@ public partial class MainWindow : Window
                 break;
         }
 
-        // Ctrl/Shift 多选：仅在原生选中变化时维护多选集合（不干预 TreeView 原生选中）
-        if (e.NewValue is EmailNodeViewModel ev2 && ev2.IsRoot)
+        // Ctrl/Shift 多选：仅在原生选中变化时维护多选集合（不干预 TreeView 原生选中）。
+        // 已忽略邮件不属于任何线索（ThreadId=0），不参与多选，避免批量设置产品/客户作用到无效线索。
+        if (e.NewValue is EmailNodeViewModel ev2 && ev2.IsRoot && !ev2.IsIgnored)
         {
             var mods = Keyboard.Modifiers;
             if (mods.HasFlag(ModifierKeys.Control))
@@ -419,6 +513,19 @@ public partial class MainWindow : Window
         // 星标菜单项文字随当前状态切换（根与非根都适用）
         if (menu.FindName("StarMenuItem") is MenuItem starMi)
             starMi.Header = ev.IsStarred ? "取消星标" : "星标";
+        // 忽略菜单项文字随当前状态切换（已忽略 → 重新纳入分析），图标同步切换：
+        // 已忽略 = 眼睛+加号（绿，重新纳入分析）；未忽略 = 眼睛划掉（红，忽略此邮件）。
+        // 注意：菜单定义在 DataTemplate 里，FindName 按 x:Name 可能找不到（与“上传日志”同理），
+        // 失败时按 Header 遍历 Items（兼容菜单实例复用：header 可能已是“忽略此邮件”或“重新纳入分析”）。
+        if (FindIgnoreMenuItem(menu) is MenuItem ignoreMi)
+        {
+            ignoreMi.Header = ev.IsIgnored ? "重新纳入分析" : "忽略此邮件";
+            if (ignoreMi.Icon is System.Windows.Shapes.Path icon)
+            {
+                icon.Data = ev.IsIgnored ? IconGeometryRestore : IconGeometryIgnore;
+                icon.Fill = ev.IsIgnored ? IconBrushRestore : IconBrushIgnore;
+            }
+        }
         // 上传日志：根/子邮件都可用（链接只用线索级信息：客服邮箱 + 工单号）
         // 注意：菜单定义在 DataTemplate 里，FindName 按 x:Name 可能找不到，改用按 Header 遍历 Items（更可靠）
         if (FindMenuItem(menu, "上传日志") is MenuItem uploadMi)
@@ -433,10 +540,12 @@ public partial class MainWindow : Window
             uploadMi.ToolTip = reason ?? $"打开上传链接给 {supportEmail}（工单 {ticket}）";
             if (reason != null) _vm.StatusText = $"[上传日志] {reason}"; // 诊断：置灰时在状态栏提示原因
         }
-        // 子邮件：只保留 回复此邮件/复制工单号/星标/上传日志（前 4 项），其余线索级项（设置状态/全部已读/设置产品客户/清空元数据）直接移除
-        if (!ev.IsRoot)
+        // 子邮件 或 已忽略邮件：只保留通用项（回复此邮件/复制工单号/星标/上传日志/忽略，前 5 项），
+        // 其余线索级项（设置状态/全部已读/设置产品客户/清空元数据）直接移除。
+        // 已忽略邮件不属于任何线索，线索级操作无意义。
+        if (!ev.IsRoot || ev.IsIgnored)
         {
-            var toRemove = menu.Items.Cast<object>().Skip(4).ToList();
+            var toRemove = menu.Items.Cast<object>().Skip(5).ToList();
             foreach (var it in toRemove) menu.Items.Remove(it);
             return;
         }
@@ -452,6 +561,15 @@ public partial class MainWindow : Window
 
     private static MenuItem? FindMenuItem(ItemsControl parent, string header) =>
         parent.Items.OfType<MenuItem>().FirstOrDefault(m => (string?)m.Header == header);
+
+    /// <summary>在右键菜单中定位“忽略此邮件/重新纳入分析”项：优先按 x:Name（模板作用域内可用时），
+    /// 失败则按 Header 遍历（兼容 DataTemplate 中 ContextMenu 的 FindName 失效，以及实例复用后 header 已变化）。</summary>
+    private static MenuItem? FindIgnoreMenuItem(ContextMenu menu)
+    {
+        if (menu.FindName("IgnoreMenu") is MenuItem byName) return byName;
+        return menu.Items.OfType<MenuItem>().FirstOrDefault(m =>
+            (string?)m.Header == "忽略此邮件" || (string?)m.Header == "重新纳入分析");
+    }
 
     private void PopulateMetaMenu(MenuItem sub, List<long> targets, EmailNodeViewModel ev, bool isProduct)
     {
@@ -955,11 +1073,19 @@ public partial class MainWindow : Window
         _vm.StatusText = $"已跳转到新邮件（{next + 1}/{nodes.Count}）";
     }
 
-    /// <summary>展开所在 客户/产品 分组并滚动选中指定邮件节点。</summary>
+    /// <summary>展开所在 客户/产品 分组（或“已忽略的邮件”大类）并滚动选中指定邮件节点。</summary>
     private void SelectAndScrollToEmail(EmailNodeViewModel node)
     {
         Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
         {
+            // 被忽略邮件：位于“已忽略的邮件”顶层大类下，展开该大类即可
+            foreach (var g in _vm.IgnoredGroups)
+            {
+                if (!g.Emails.Any(e => ReferenceEquals(e, node))) continue;
+                if (TreeView.ItemContainerGenerator.ContainerFromItem(g) is TreeViewItem gTvi)
+                    gTvi.IsExpanded = true;
+                break;
+            }
             foreach (var cust in _vm.Customers)
             {
                 bool found = false;
@@ -1396,7 +1522,28 @@ public partial class MainWindow : Window
             _vm.ToggleStar(ev);
     }
 
-    private void Exit_Click(object sender, RoutedEventArgs e) => Close();
+    /// <summary>右键“忽略此邮件/取消忽略”：切换该邮件的忽略状态（忽略后不加入线索，收集到“被忽略的邮件”分组）。</summary>
+    private void IgnoreEmail_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is MenuItem mi && mi.Tag is EmailNodeViewModel ev)
+            _vm.ToggleIgnoreEmail(ev);
+    }
+
+    /// <summary>附件右键“打开”：下载并系统默认应用打开。</summary>
+    private void OpenAttachmentMenu_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is MenuItem mi && mi.Tag is string name)
+            _vm.OpenAttachmentCommand.Execute(name);
+    }
+
+    /// <summary>附件右键“保存…”：弹出另存为对话框保存附件。</summary>
+    private void SaveAttachmentMenu_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is MenuItem mi && mi.Tag is string name)
+            _vm.SaveAttachmentCommand.Execute(name);
+    }
+
+    private void Exit_Click(object sender, RoutedEventArgs e) => ExitApplication();
 
     private void About_Click(object sender, RoutedEventArgs e)
     {

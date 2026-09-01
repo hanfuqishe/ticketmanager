@@ -1,7 +1,10 @@
+using System.Collections.ObjectModel;
+using System.IO;
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Input;
+using Microsoft.Win32;
 using TicketManager.Models;
 using TicketManager.Services;
 
@@ -55,6 +58,44 @@ public class ReplyTicketViewModel : ViewModelBase
         .Distinct(StringComparer.OrdinalIgnoreCase));
     public string CcDisplay => string.IsNullOrEmpty(CcEmails) ? "（无）" : CcEmails;
 
+    /// <summary>用户手动添加的额外抄送（多个用逗号/分号分隔，可含 姓名&lt;邮箱&gt;）。</summary>
+    public string ExtraCcEmails { get => _extraCc; set => Set(ref _extraCc, value); }
+    private string _extraCc = "";
+
+    /// <summary>额外抄送候选：我方同事（设置→我方域名）。</summary>
+    public List<string> ColleagueCcOptions { get; }
+
+    /// <summary>把同事邮箱追加到额外抄送（去重，不覆盖已有内容）。</summary>
+    public void AppendColleagueCc(string display)
+    {
+        var email = WorkflowService.ExtractEmail(display);
+        if (string.IsNullOrEmpty(email)) return;
+        var list = (ExtraCcEmails ?? "").Split(';', ',')
+            .Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+        if (!list.Any(x => string.Equals(WorkflowService.ExtractEmail(x), email, StringComparison.OrdinalIgnoreCase)))
+        {
+            list.Add(display);
+            ExtraCcEmails = string.Join(", ", list);
+        }
+    }
+
+    /// <summary>最终抄送：自动（接口人/客服）+ 用户额外输入，统一提纯、去重、逗号分隔。</summary>
+    private string BuildCc()
+    {
+        var list = new List<string>();
+        foreach (var a in (CcEmails ?? "").Split(','))
+        {
+            var e = WorkflowService.ExtractEmail(a);
+            if (e.Length > 0) list.Add(e);
+        }
+        foreach (var a in (ExtraCcEmails ?? "").Split(';', ','))
+        {
+            var e = WorkflowService.ExtractEmail(a);
+            if (e.Length > 0) list.Add(e);
+        }
+        return string.Join(",", list.Distinct(StringComparer.OrdinalIgnoreCase));
+    }
+
     public string Body
     {
         get => _body;
@@ -64,6 +105,40 @@ public class ReplyTicketViewModel : ViewModelBase
 
     public string Signature { get => _signature; set => Set(ref _signature, value); }
     private string _signature = "";
+
+    /// <summary>待发送的附件（完整文件路径）。</summary>
+    public ObservableCollection<string> Attachments { get; } = new();
+
+    /// <summary>附件数量摘要（用于状态栏提示）。</summary>
+    public string AttachmentSummary => Attachments.Count == 0 ? "未添加附件" : $"已添加 {Attachments.Count} 个附件";
+
+    /// <summary>选择并添加附件（可多选）。</summary>
+    public void AddAttachment()
+    {
+        var dlg = new OpenFileDialog { Title = "选择要附加的文件", Multiselect = true };
+        if (dlg.ShowDialog() != true) return;
+        foreach (var f in dlg.FileNames)
+            if (!Attachments.Contains(f)) Attachments.Add(f);
+        OnPropertyChanged(nameof(AttachmentSummary));
+    }
+
+    /// <summary>移除指定附件。</summary>
+    public void RemoveAttachment(object? item)
+    {
+        if (item is string f)
+        {
+            Attachments.Remove(f);
+            OnPropertyChanged(nameof(AttachmentSummary));
+        }
+    }
+
+    /// <summary>把指定文件加入附件列表（粘贴文件/图片时用；去重并刷新摘要）。</summary>
+    public void AddAttachmentPath(string path)
+    {
+        if (string.IsNullOrEmpty(path) || !File.Exists(path) || Attachments.Contains(path)) return;
+        Attachments.Add(path);
+        OnPropertyChanged(nameof(AttachmentSummary));
+    }
 
     public string StatusText { get => _statusText; set => Set(ref _statusText, value); }
     private string _statusText = "";
@@ -122,6 +197,7 @@ public class ReplyTicketViewModel : ViewModelBase
         var sigs = workflow.LoadSignatures();
         SignatureNames = sigs.Select(s => s.Name).ToList();
         _signature = SignatureNames.FirstOrDefault() ?? "";
+        ColleagueCcOptions = workflow.FormatRecipients(workflow.GetColleagueContacts());
 
         SendCommand = new RelayCommand(async _ => await SendAsync(), _ => CanSend);
         TranslateCommand = new RelayCommand(async _ => await TranslateAsync(), _ => !IsTranslating && !IsSending);
@@ -149,9 +225,11 @@ public class ReplyTicketViewModel : ViewModelBase
         IsSending = true;
         try
         {
-            var cc = string.IsNullOrEmpty(CcEmails) ? null : CcEmails;
+            var ccAll = BuildCc();
+            var cc = string.IsNullOrEmpty(ccAll) ? null : ccAll;
             var content = BuildBodyHtml();
-            var (ok, err) = await _workflow.SendTicketEmailAsync(to, cc, Subject, content, null, default);
+            var (ok, err) = await _workflow.SendTicketEmailAsync(
+                to, cc, Subject, content, Attachments.Count > 0 ? Attachments.ToList() : null, default);
             StatusText = ok ? $"已发送：{Subject}" : (err ?? "发送失败");
             if (ok) Sended?.Invoke();
         }

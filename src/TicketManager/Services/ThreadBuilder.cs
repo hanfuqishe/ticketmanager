@@ -17,6 +17,9 @@ public class ThreadBuilder
 {
     public List<TicketThread> Build(List<EmailMessage> allEmails)
     {
+        // 被忽略的邮件不参与任何线索构建（单独收集在“被忽略的邮件”分组）
+        allEmails = allEmails.Where(e => !e.Ignored).ToList();
+
         // MessageId 索引（不区分大小写）
         var index = new Dictionary<string, EmailMessage>(StringComparer.OrdinalIgnoreCase);
         foreach (var e in allEmails)

@@ -178,7 +178,8 @@ db.Initialize();
 var email = new EmailMessage
 {
     Folder = "INBOX", Uid = 1, MessageId = "smoke-1", Subject = "s", TicketNumber = "T9",
-    Product = "P", Enterprise = "E", DateSent = DateTimeOffset.Now, DateReceived = DateTimeOffset.Now,
+    Product = "P", Enterprise = "E", ZohoThreadId = 0,
+    DateSent = DateTimeOffset.Now, DateReceived = DateTimeOffset.Now,
     BodyText = "b", ContentHash = "c"
 };
 var id = db.UpsertEmail(email);
@@ -205,6 +206,44 @@ Check(workflow.ResolveEnterpriseName("旺旺集团") == "旺旺集团",
     $"已是中文原样返回（实际: {workflow.ResolveEnterpriseName("旺旺集团")}）");
 Check(workflow.ResolveEnterpriseName("UnknownCo") == "UnknownCo",
     $"无匹配英文名原样返回（实际: {workflow.ResolveEnterpriseName("UnknownCo")}）");
+
+Console.WriteLine();
+Console.WriteLine("=== 8. 忽略邮件：被忽略邮件不加入线索，单独收集 ===");
+// 再插一封与 smoke-1 同工单(T9)的邮件，验证“忽略”后退出线程、单独收集
+var eIgnore = new EmailMessage
+{
+    Folder = "INBOX", Uid = 2, MessageId = "smoke-2", Subject = "[###T9###][P][E]同工单另一封",
+    TicketNumber = "T9", Product = "P", Enterprise = "E", ZohoThreadId = 0,
+    DateSent = DateTimeOffset.Now, DateReceived = DateTimeOffset.Now, BodyText = "b2", ContentHash = "c2"
+};
+var eIgnoreId = db.UpsertEmail(eIgnore);
+
+// 忽略前：两封同工单 → 1 条线程 2 封邮件
+var tbBefore = new ThreadBuilder().Build(db.LoadAllEmails());
+Check(tbBefore.Count == 1 && tbBefore[0].Emails.Count == 2,
+    $"忽略前：1 条线程 2 封邮件（实际 {tbBefore.Count} 条/{(tbBefore.Count > 0 ? tbBefore[0].Emails.Count : 0)} 封）");
+
+// 忽略该邮件
+db.SetEmailIgnored(eIgnoreId, true);
+var tbAfter = new ThreadBuilder().Build(db.LoadAllEmails());
+Check(!tbAfter.Any(t => t.Emails.Any(x => x.Id == eIgnoreId)),
+    "忽略后：该邮件不进入任何线索");
+Check(db.LoadIgnoredEmails().Any(x => x.Id == eIgnoreId) && db.LoadIgnoredEmails().All(x => x.Ignored),
+    "忽略后：出现在 LoadIgnoredEmails");
+
+// 走完整工作流路径（WorkflowService.SetEmailIgnored → 落库 + 重建线程）
+workflow.SetEmailIgnored(eIgnoreId, true);
+Check(!workflow.LoadThreads().Any(t => t.Emails.Any(x => x.Id == eIgnoreId)),
+    "Workflow：忽略后不在任何线程（LoadThreads）");
+Check(workflow.LoadIgnoredEmails().Any(x => x.Id == eIgnoreId),
+    "Workflow：忽略后出现在忽略列表");
+
+// 取消忽略 → 恢复进线程
+workflow.SetEmailIgnored(eIgnoreId, false);
+Check(!workflow.LoadIgnoredEmails().Any(x => x.Id == eIgnoreId),
+    "取消忽略后：不再出现在忽略列表");
+Check(workflow.LoadThreads().Any(t => t.Emails.Any(x => x.Id == eIgnoreId)),
+    "取消忽略后：重新进入线程");
 
 Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
 File.Delete(dbPath);

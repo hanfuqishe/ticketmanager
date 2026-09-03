@@ -59,8 +59,6 @@ public partial class MainWindow : Window
         };
         _vm.JumpToNewMailRequested += JumpNewMail;
         _vm.SelectionRestoredAfterMerge += RestoreSelectionInTree;
-        // 过滤开关（仅新邮件/仅星标/仅打开工单/显示被忽略）整树重建：UI 层捕获/重放展开，避免树塌回默认层级
-        _vm.PreservedRebuildRequested += RebuildPreservingExpansion;
         RenderEmailBody(); // 初始（空）正文
         _vm.AutoSyncAndListen(); // 启动后自动同步，随后进入自动收取新邮件模式
     }
@@ -1561,38 +1559,6 @@ public partial class MainWindow : Window
             "通过 Zoho Mail REST API 同步工单邮件，自动解析主题、按工单归组线程，" +
             "并用 AI 提炼标题、总结工单状态，按 客户/产品 组织展示。",
             "关于", MessageBoxButton.OK, MessageBoxImage.Information);
-    }
-
-    /// <summary>过滤开关切换：同步单段重建（与检索过滤体验一致，不闪）。重建前把当前 TreeView 真实展开
-    /// 写回 VM 的 ExpandedByDefault，使 RebuildTree 的快照捕获到 UI 真值 → 新容器首次绑定即恢复展开。
-    /// 不再用“后台重建 + Loaded 重放”两段式——那会造成“先收起再展开”的整树闪烁。</summary>
-    private void RebuildPreservingExpansion()
-    {
-        SyncExpandedFromUi(TreeView);
-        double prevOffset = -1;
-        if (FindScrollViewer(TreeView) is { } sv) prevOffset = sv.VerticalOffset;
-        _vm.RefreshTree();
-        // 滚动位置可能随布局延迟生效，Loaded 后异步恢复（仅滚动，不影响展开，无闪烁）
-        if (prevOffset >= 0)
-            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() => RestoreScrollOffset(prevOffset)));
-    }
-
-    /// <summary>把 UI 上各 TreeViewItem 的实际展开状态同步回对应 VM 的 ExpandedByDefault
-    /// （TwoWay 绑定的显式兜底，确保重建时快照与所见一致）。仅下钻已展开的父节点——收起父节点下没有子容器、其 VM 本就保持折叠。</summary>
-    private static void SyncExpandedFromUi(ItemsControl parent)
-    {
-        foreach (var item in parent.Items)
-        {
-            if (parent.ItemContainerGenerator.ContainerFromItem(item) is not TreeViewItem tvi) continue;
-            switch (item)
-            {
-                case CustomerGroupViewModel c: c.ExpandedByDefault = tvi.IsExpanded; break;
-                case ProductGroupViewModel p: p.ExpandedByDefault = tvi.IsExpanded; break;
-                case EmailNodeViewModel e: e.ExpandedByDefault = tvi.IsExpanded; break;
-                case IgnoredGroupViewModel g: g.ExpandedByDefault = tvi.IsExpanded; break;
-            }
-            if (tvi.IsExpanded) SyncExpandedFromUi(tvi);
-        }
     }
 
     /// <summary>重建树时保留各节点的展开/折叠状态、滚动位置，保持“当前选中”线索选中且显示位置不变。</summary>

@@ -136,39 +136,36 @@ public class MainViewModel : ViewModelBase
 
     // ===== 树过滤开关（仅新邮件 / 仅星标 / 仅打开工单 / 显示被忽略）=====
 
-    /// <summary>“保留展开重建”请求：由主窗口订阅后在 UI 层 捕获当前展开 → 重建 → 容器就绪时重放。
-    /// 仅靠 VM 展开值快照恢复在容器/TwoWay 绑定未同步时会失败（表现为过滤切换后整树塌回默认层级），
-    /// 以真实 TreeView 容器状态为准最可靠。</summary>
-    public event Action? PreservedRebuildRequested;
-
-    /// <summary>触发“保留展开重建”；无订阅者（如无窗口的测试环境）时回退为普通即时重建。</summary>
-    private void RequestPreservedRebuild()
+    /// <summary>过滤开关切换：就地增量应用过滤（不整树重建）。只移除不匹配分支、补插重新匹配的分支，
+    /// 保留现有可见节点与其展开状态——整树重建会让新容器按默认层级渲染，导致部分已展开分支收起/整树闪烁。
+    /// 与自动同步的 MergeThreads 同一机制；_threads（全量、未变）直接作为“目标线程表”传入。</summary>
+    private void ApplyFilterInPlace()
     {
-        if (PreservedRebuildRequested != null) { PreservedRebuildRequested(); return; }
-        RebuildTreeWithBusyCursor();
+        if (_threads == null) { RebuildTree(); return; }
+        MergeThreads(_threads);
     }
 
     private bool _newMailOnly;
-    /// <summary>“仅新邮件”过滤：只显示含有新同步邮件的线索（切换时即时重建树，保留展开状态）。</summary>
+    /// <summary>“仅新邮件”过滤：只显示含有新同步邮件的线索（切换时就地增删，保留展开）。</summary>
     public bool NewMailOnly
     {
         get => _newMailOnly;
         set
         {
             if (Set(ref _newMailOnly, value))
-                RequestPreservedRebuild();
+                ApplyFilterInPlace();
         }
     }
 
     private bool _starredOnly;
-    /// <summary>“仅星标”过滤：只显示含有星标邮件的线索（切换时即时重建树，保留展开状态）。</summary>
+    /// <summary>“仅星标”过滤：只显示含有星标邮件的线索（切换时就地增删，保留展开）。</summary>
     public bool StarredOnly
     {
         get => _starredOnly;
         set
         {
             if (Set(ref _starredOnly, value))
-                RequestPreservedRebuild();
+                ApplyFilterInPlace();
         }
     }
 
@@ -180,39 +177,20 @@ public class MainViewModel : ViewModelBase
         set
         {
             if (Set(ref _showIgnored, value))
-                RequestPreservedRebuild();
+                ApplyFilterInPlace();
         }
     }
 
     private bool _openOnly;
-    /// <summary>“仅显示打开的工单”过滤：勾选后隐藏 已解决/已完成/已关闭/合并或拆分为其他工单 的线索（切换时即时重建树，保留展开状态）。</summary>
+    /// <summary>“仅显示打开的工单”过滤：勾选后隐藏 已解决/已完成/已关闭/合并或拆分为其他工单 的线索（切换时就地增删，保留展开）。</summary>
     public bool OpenOnly
     {
         get => _openOnly;
         set
         {
             if (Set(ref _openOnly, value))
-                RequestPreservedRebuild();
+                ApplyFilterInPlace();
         }
-    }
-
-    /// <summary>在忙碌光标下重建树：过滤切换重建可能耗时，先让鼠标变为等待状再执行（
-    /// 用 Background 优先级延迟执行，确保等待光标先渲染出来；无 WPF 环境时回退为同步重建）。</summary>
-    private void RebuildTreeWithBusyCursor()
-    {
-        if (Application.Current == null) { RebuildTree(); return; }
-        Mouse.OverrideCursor = Cursors.Wait;
-        Application.Current.Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
-        {
-            try
-            {
-                RebuildTree();
-            }
-            finally
-            {
-                Mouse.OverrideCursor = null;
-            }
-        }));
     }
 
     /// <summary>
@@ -894,10 +872,6 @@ public class MainViewModel : ViewModelBase
         _threads = _workflow.LoadThreads();
         RebuildTree();
     }
-
-    /// <summary>仅重建树（不重读数据库）：供主窗口在“保留展开状态”重建（过滤开关切换）时使用，
-    /// 此时内存中的 _threads 未变，无需重新从 DB 加载。</summary>
-    public void RefreshTree() => RebuildTree();
 
     /// <summary>按根邮件 Id 手工设置线程状态：更新数据库 + 内存线程对象，并就地刷新根邮件显示（不重建树，避免闪烁）。</summary>
     public void SetThreadStatusByRootEmail(long rootEmailId, string status, string reason = "")

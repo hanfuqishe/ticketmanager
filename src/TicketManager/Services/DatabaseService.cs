@@ -509,12 +509,26 @@ public class DatabaseService : IDisposable
         using var conn = Open();
         using var tx = conn.BeginTransaction();
 
-        // 重建前保留已有线程的 AI 状态/总结/手工理由，避免手工设置产品/客户等重建后丢失
+        // 重建前保留已有线程的 AI 状态/总结/手工理由，避免手工设置产品/客户等重建后丢失。
+        // 键：有工单号用“t:工单号”；无工单号的线程（自动回复/通知等）用“e:根邮件 Email Id”（邮件 Id 在 Upsert 中稳定，
+        // 重建后仍可对上）——否则无工单号线程的手工/AI 状态每次重建都会被抹掉。
         var old = new Dictionary<string, (string Status, string Summary, string Reason)>(StringComparer.OrdinalIgnoreCase);
-        foreach (var r in conn.Query("SELECT TicketNumber, Status, StatusSummary, StatusReason FROM Threads"))
+        foreach (var r in conn.Query("SELECT Id, TicketNumber, Status, StatusSummary, StatusReason FROM Threads"))
         {
-            var key = ((string)r.TicketNumber).Trim();
-            if (key.Length == 0) continue;
+            var ticket = ((string)r.TicketNumber).Trim();
+            string key;
+            if (ticket.Length > 0)
+            {
+                key = "t:" + ticket;
+            }
+            else
+            {
+                var rootId = conn.ExecuteScalar<long?>(
+                    "SELECT Id FROM Emails WHERE ThreadId = @tid ORDER BY DateSent ASC, Id ASC LIMIT 1",
+                    new { tid = (long)r.Id });
+                if (rootId is not long rid || rid <= 0) continue;
+                key = "e:" + rid;
+            }
             old[key] = ((string)r.Status, (string)r.StatusSummary, (string)r.StatusReason);
         }
 
@@ -522,8 +536,19 @@ public class DatabaseService : IDisposable
         conn.Execute("UPDATE Emails SET ThreadId = 0", transaction: tx);
         foreach (var t in threads)
         {
-            var key = t.TicketNumber.Trim();
-            var hasOld = old.TryGetValue(key, out var prev);
+            var ticket = t.TicketNumber.Trim();
+            string key;
+            if (ticket.Length > 0)
+            {
+                key = "t:" + ticket;
+            }
+            else
+            {
+                var rootId = t.Emails.OrderBy(e => e.DateSent).FirstOrDefault()?.Id ?? 0;
+                key = rootId > 0 ? "e:" + rootId : "";
+            }
+            (string Status, string Summary, string Reason) prev = default;
+            var hasOld = key.Length > 0 && old.TryGetValue(key, out prev);
             var status = hasOld ? prev.Status : t.Status;
             var summary = hasOld ? prev.Summary : t.StatusSummary;
             var reason = hasOld ? prev.Reason : ""; // 保留手工设置的状态理由

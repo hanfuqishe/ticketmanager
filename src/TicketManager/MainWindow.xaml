@@ -588,15 +588,6 @@
                         <TextBlock Text=" 仅星标" VerticalAlignment="Center"/>
                     </StackPanel>
                 </ToggleButton>
-                <ToggleButton IsChecked="{Binding OpenOnly}" Style="{StaticResource ToolbarToggleButtonStyle}"
-                              MinWidth="82" Padding="8,3"
-                              FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"
-                              ToolTip="只显示打开的工单（隐藏 已解决/已关闭/已合并到其他工单）">
-                    <StackPanel Orientation="Horizontal">
-                        <Path Data="{StaticResource IconCheck}" Fill="#43A047" Width="14" Height="14" Stretch="Uniform" VerticalAlignment="Center"/>
-                        <TextBlock Text=" 仅打开" VerticalAlignment="Center"/>
-                    </StackPanel>
-                </ToggleButton>
                 <Border Width="1" Background="#C8C8C8" Margin="8,3,0,3"/>
                 <Button Command="{Binding JumpToNewMailCommand}" Style="{StaticResource ToolbarButtonStyle}"
                         MinWidth="104" Padding="10,3"

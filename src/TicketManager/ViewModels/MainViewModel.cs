@@ -138,8 +138,9 @@ public class MainViewModel : ViewModelBase
 
     /// <summary>过滤开关切换：就地增量应用过滤（不整树重建）。只移除不匹配分支、补插重新匹配的分支，
     /// 保留现有可见节点与其展开状态——整树重建会让新容器按默认层级渲染，导致部分已展开分支收起/整树闪烁。
-    /// 与自动同步的 MergeThreads 同一机制；_threads（全量、未变）直接作为“目标线程表”传入。</summary>
-    private void ApplyFilterInPlace()
+    /// 与自动同步的 MergeThreads 同一机制；_threads（全量、未变）直接作为“目标线程表”传入。
+    /// 公开：淡出动画完成后由主窗口调用以移除被标记为已结束的线索。</summary>
+    public void ApplyFilterInPlace()
     {
         if (_threads == null) { RebuildTree(); return; }
         MergeThreads(_threads);
@@ -181,7 +182,7 @@ public class MainViewModel : ViewModelBase
         }
     }
 
-    private bool _openOnly;
+    private bool _openOnly = true; // 默认开启：只显示“打开”（未关闭/未解决/未合并）的工单，启动即生效
     /// <summary>“仅显示打开的工单”过滤：勾选后隐藏 已解决/已完成/已关闭/合并或拆分为其他工单 的线索（切换时就地增删，保留展开）。</summary>
     public bool OpenOnly
     {
@@ -220,6 +221,9 @@ public class MainViewModel : ViewModelBase
     private bool MatchesFilter(TicketThread t)
         => MatchesSearch(t) && (!_newMailOnly || HasNewMail(t)) && (!_starredOnly || t.Emails.Any(e => e.Starred))
            && (!_openOnly || !IsThreadClosed(t));
+
+    /// <summary>线程当前是否应显示在树中（与过滤条件一致）。供主窗口在淡出动画结束后判断该线程的去留。</summary>
+    public bool IsThreadDisplayed(TicketThread t) => MatchesFilter(t);
 
     private ThreadViewModel? _selectedThread;
     public ThreadViewModel? SelectedThread
@@ -475,6 +479,13 @@ public class MainViewModel : ViewModelBase
 
     /// <summary>增量合并后已恢复选中（节点可能被替换/移动），主窗口据此在 TreeView 中重新高亮选中。</summary>
     public event Action? SelectionRestoredAfterMerge;
+
+    /// <summary>“仅显示打开工单”开启时，某线索被手工标记为已结束（已解决/已关闭/已合并）：请求主窗口
+    /// 先对其根节点播放淡出动画，再由主窗口调用就地过滤把它从树中移除（调用方应随后执行 ApplyFilterInPlace）。</summary>
+    public event Action<EmailNodeViewModel>? ClosedThreadFadeOutRequested;
+
+    /// <summary>右键“忽略此邮件”：请求主窗口先对该行播放淡出+行收缩动画，动画结束后主窗口调用 ConfirmIgnoreEmail 真正落库并就地合并。</summary>
+    public event Action<EmailNodeViewModel>? IgnoreFadeOutRequested;
 
     public MainViewModel(WorkflowService workflow)
     {
@@ -878,18 +889,23 @@ public class MainViewModel : ViewModelBase
     {
         _workflow.SetThreadStatusByRootEmail(rootEmailId, status, reason);
         long updatedThreadId = 0;
+        EmailNodeViewModel? targetRoot = null; // 被改状态的线索根节点（若命中）
         foreach (var cust in Customers)
             foreach (var prod in cust.Products)
                 foreach (var root in prod.Threads)
                 {
                     if (root.Email.Id != rootEmailId) continue;
                     updatedThreadId = root.Email.ThreadId;
+                    targetRoot = root;
                     root.ThreadOwner.Thread.Status = status;
                     root.ThreadOwner.Thread.StatusSummary = "";
                     root.ThreadOwner.Thread.StatusReason = reason;
                     root.RefreshThreadInfo();
                     break;
                 }
+        // “仅显示打开工单”开启时，线索一旦被标记为已结束 → 就地隐藏：先请求主窗口对其淡出，动画结束再移除
+        if (targetRoot != null && _openOnly && IsThreadClosed(targetRoot.ThreadOwner.Thread))
+            ClosedThreadFadeOutRequested?.Invoke(targetRoot);
         // 若右侧详情面板显示的是该线程，同步刷新标题/总结/状态框配色/理由
         if (SelectedThread != null && SelectedThread.Thread.Id == updatedThreadId)
         {
@@ -1168,17 +1184,31 @@ public class MainViewModel : ViewModelBase
         // 不因星标变化立即重建“仅星标”过滤视图：取消星标后线索仍保留显示，直到切换开关/搜索/下次重建
     }
 
-    /// <summary>切换某封邮件的“忽略”状态：忽略后不加入任何线索，收集到“被忽略的邮件”分组；再点一次取消忽略。</summary>
+    /// <summary>切换某封邮件的“忽略”状态。忽略：先请求主窗口对该行播放“淡出+行收缩”动画，动画结束由主窗口调
+    /// <see cref="ConfirmIgnoreEmail"/> 真正落库并就地合并；取消忽略：直接落库并就地合并（保留展开，不整树重建）。</summary>
     public void ToggleIgnoreEmail(EmailNodeViewModel ev)
     {
-        var id = ev.Email.Id;
-        var ignore = !ev.Email.Ignored;
-        _workflow.SetEmailIgnored(id, ignore); // 落库 + 重建线程表（被忽略邮件退出原线索）
-        StatusText = ignore
-            ? "已忽略该邮件（可在“视图”→“显示被忽略的邮件”中查看）"
-            : "已取消忽略该邮件";
+        if (ev == null) return;
+        if (!ev.Email.Ignored)
+        {
+            IgnoreFadeOutRequested?.Invoke(ev); // 先播放动画，动画结束后再落库
+            return;
+        }
+        _workflow.SetEmailIgnored(ev.Email.Id, false);
+        StatusText = "已取消忽略该邮件";
         _threads = _workflow.LoadThreads();
-        RebuildTree();
+        MergeThreads(_threads);
+    }
+
+    /// <summary>忽略邮件的“动画结束确认”：真正落库（忽略邮件退出原线索、进入被忽略分组）并就地合并树。
+    /// 由主窗口在该行淡出+行收缩动画播放完毕后调用；被忽略行此刻已收起，无需整树重建。</summary>
+    public void ConfirmIgnoreEmail(EmailNodeViewModel ev)
+    {
+        if (ev == null || ev.Email.Ignored) return;
+        _workflow.SetEmailIgnored(ev.Email.Id, true); // 落库 + 重建线程表（被忽略邮件退出原线索）
+        StatusText = "已忽略该邮件（可在“视图”→“显示被忽略的邮件”中查看）";
+        _threads = _workflow.LoadThreads();
+        MergeThreads(_threads);
     }
 
     /// <summary>递归刷新星标显示（批量切换线索星标后调用）。</summary>

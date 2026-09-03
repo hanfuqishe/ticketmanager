@@ -59,6 +59,8 @@ public partial class MainWindow : Window
         };
         _vm.JumpToNewMailRequested += JumpNewMail;
         _vm.SelectionRestoredAfterMerge += RestoreSelectionInTree;
+        _vm.ClosedThreadFadeOutRequested += OnClosedThreadFadeOut;
+        _vm.IgnoreFadeOutRequested += OnIgnoreFadeOut;
         RenderEmailBody(); // 初始（空）正文
         _vm.AutoSyncAndListen(); // 启动后自动同步，随后进入自动收取新邮件模式
     }
@@ -553,6 +555,10 @@ public partial class MainWindow : Window
         var targets = _vm.SelectedThreadIds.Contains(ev.Email.ThreadId)
             ? _vm.SelectedThreadIds.ToList()
             : new List<long> { ev.Email.ThreadId };
+        // 无工单号的线索（多为自动回复/通知，非正式工单）：状态存不住且无意义，禁用“手工设置状态”，
+        // 只保留 AI 总结 与 忽略（忽略在通用项区，本就不受影响）
+        if (string.IsNullOrWhiteSpace(ev.ThreadOwner.TicketNumber))
+            DisableManualStatusItems(menu);
         var setProduct = FindMenuItem(menu, "设置产品");
         var setEnterprise = FindMenuItem(menu, "设置客户");
         if (setProduct != null) PopulateMetaMenu(setProduct, targets, ev, isProduct: true);
@@ -561,6 +567,20 @@ public partial class MainWindow : Window
 
     private static MenuItem? FindMenuItem(ItemsControl parent, string header) =>
         parent.Items.OfType<MenuItem>().FirstOrDefault(m => (string?)m.Header == header);
+
+    /// <summary>无工单号线索：禁用“设置状态”子菜单下除 AI 总结外的状态项（AI 总结与忽略仍可用）。</summary>
+    private static void DisableManualStatusItems(ContextMenu menu)
+    {
+        var setStatus = FindMenuItem(menu, "设置状态");
+        if (setStatus == null) return;
+        const string tip = "该线索没有工单号（非正式工单），无法手工设置状态；可 AI 总结或忽略";
+        foreach (var it in setStatus.Items.OfType<MenuItem>())
+        {
+            if (string.Equals((string?)it.Header, "AI 总结", StringComparison.Ordinal)) continue;
+            it.IsEnabled = false;
+            it.ToolTip = tip;
+        }
+    }
 
     /// <summary>在右键菜单中定位“忽略此邮件/重新纳入分析”项：优先按 x:Name（模板作用域内可用时），
     /// 失败则按 Header 遍历（兼容 DataTemplate 中 ContextMenu 的 FindName 失效，以及实例复用后 header 已变化）。</summary>
@@ -1042,6 +1062,78 @@ public partial class MainWindow : Window
     {
         if (n.IsNew) list.Add(n);
         foreach (var c in n.Children) CollectNew(c, list);
+    }
+
+    /// <summary>“仅打开工单”开启且线索被手工标记为已结束（已解决/已关闭/已合并）：对根节点播放淡出+行高收缩，
+    /// 让下方内容平滑上移而非瞬间跳位，完成后就地移除（隐藏）。</summary>
+    private void OnClosedThreadFadeOut(EmailNodeViewModel node)
+    {
+        var tvi = FindTreeViewItem(TreeView, node);
+        if (tvi == null) { _vm.ApplyFilterInPlace(); return; } // 容器未生成（极少见）→ 直接移除
+        PlayCollapseAnimation(tvi, () =>
+        {
+            // 收缩结束：不匹配当前过滤的线索被就地移除；若期间状态被改回（应保留）则恢复显示
+            _vm.ApplyFilterInPlace();
+            if (_vm.IsThreadDisplayed(node.ThreadOwner.Thread))
+            {
+                tvi.BeginAnimation(UIElement.OpacityProperty, null);
+                tvi.Opacity = 1.0;
+            }
+        });
+    }
+
+    /// <summary>右键“忽略此邮件”：先对该邮件行播放与关闭一致的淡出+行收缩动画，动画结束再真正落库并就地合并。</summary>
+    private void OnIgnoreFadeOut(EmailNodeViewModel node)
+    {
+        var tvi = FindTreeViewItem(TreeView, node);
+        if (tvi == null) { _vm.ConfirmIgnoreEmail(node); return; }
+        PlayCollapseAnimation(tvi, () => _vm.ConfirmIgnoreEmail(node));
+    }
+
+    /// <summary>对指定行播放“淡出 + 行高收缩到 0”动画（下方内容随之平滑上移）；动画结束（属性已复位）回调 onCompleted。</summary>
+    private static void PlayCollapseAnimation(TreeViewItem tvi, Action onCompleted)
+    {
+        double h = tvi.ActualHeight;
+        // 行内容先快速淡出，掩盖收缩过程中的裁切残影
+        var fade = new System.Windows.Media.Animation.DoubleAnimation(1.0, 0.0, TimeSpan.FromMilliseconds(150));
+        if (h <= 1)
+        {
+            fade.Completed += (_, _) => onCompleted();
+            tvi.BeginAnimation(UIElement.OpacityProperty, fade);
+            return;
+        }
+
+        // 固定当前行高并裁掉溢出，再把行高从 h 平滑收缩到 0 → 下方行随之平滑上移
+        tvi.Height = h;
+        tvi.ClipToBounds = true;
+        var collapse = new System.Windows.Media.Animation.DoubleAnimation(h, 0.0, TimeSpan.FromMilliseconds(520))
+        {
+            EasingFunction = new System.Windows.Media.Animation.QuadraticEase
+            {
+                EasingMode = System.Windows.Media.Animation.EasingMode.EaseIn
+            }
+        };
+        collapse.Completed += (_, _) =>
+        {
+            tvi.BeginAnimation(FrameworkElement.HeightProperty, null);
+            tvi.ClearValue(FrameworkElement.HeightProperty);
+            tvi.ClipToBounds = false;
+            onCompleted();
+        };
+        tvi.BeginAnimation(UIElement.OpacityProperty, fade);
+        tvi.BeginAnimation(FrameworkElement.HeightProperty, collapse);
+    }
+
+    /// <summary>按 DataContext 在 TreeView 中递归查找对应的 TreeViewItem 容器。</summary>
+    private static TreeViewItem? FindTreeViewItem(ItemsControl parent, object data)
+    {
+        if (parent.ItemContainerGenerator.ContainerFromItem(data) is TreeViewItem direct) return direct;
+        foreach (var item in parent.Items)
+        {
+            if (parent.ItemContainerGenerator.ContainerFromItem(item) is not TreeViewItem tvi) continue;
+            if (FindTreeViewItem(tvi, data) is { } found) return found;
+        }
+        return null;
     }
 
     /// <summary>增量合并（同步/排序）后：重新在 TreeView 中选中并滚动到恢复的选中节点，保持选中不变。</summary>

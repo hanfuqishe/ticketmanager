@@ -12,6 +12,13 @@ public class AppConfig
     public string ImapFolder { get; set; } = "INBOX";
     public string ImapSentFolder { get; set; } = ""; // 发件箱；留空则按 IMAP 属性自动识别
 
+    // ===== SMTP 发送（未配置/不使用 Zoho REST 时的发信通道；“提新工单/回复”发信用） =====
+    public string SmtpHost { get; set; } = "";
+    public int SmtpPort { get; set; } = 465;
+    public bool SmtpUseSsl { get; set; } = true;
+    public string SmtpUsername { get; set; } = ""; // 留空回退用 IMAP 账号
+    public string SmtpPassword { get; set; } = ""; // 留空回退用 IMAP 密码
+
     // ===== 关注的客服邮箱 =====
     public List<string> MonitoredAddresses { get; set; } = new();
 
@@ -38,6 +45,7 @@ public class AppConfig
     public bool ProxyForImap { get; set; } = true;
     public bool ProxyForDeepSeek { get; set; }
     public bool ProxyForZoho { get; set; } // Zoho REST API 走代理（直连被封锁时必需，独立于总开关）
+    public bool ProxyForSmtp { get; set; } // SMTP 发送走代理（独立于总开关）
 
     // ===== Zoho Mail REST API（IMAP 被封锁后的替代） =====
     public string ZohoApiBase { get; set; } = "https://mail.zoho.com/api";

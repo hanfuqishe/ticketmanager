@@ -32,6 +32,13 @@ public class WorkflowService
             ImapPassword = CredentialService.Unprotect(_db.GetSetting("imap_password")),
             ImapFolder = StrOr(_db.GetSetting("imap_folder"), "INBOX"),
             ImapSentFolder = _db.GetSetting("imap_sent_folder"),
+
+            SmtpHost = _db.GetSetting("smtp_host"),
+            SmtpPort = IntOr(_db.GetSetting("smtp_port"), 465),
+            SmtpUseSsl = BoolOr(_db.GetSetting("smtp_ssl"), true),
+            SmtpUsername = _db.GetSetting("smtp_username"),
+            SmtpPassword = CredentialService.Unprotect(_db.GetSetting("smtp_password")),
+
             MonitoredAddresses = SplitList(_db.GetSetting("monitored_addresses")),
             MySupportDomains = SplitList(_db.GetSetting("my_support_domains")),
             DomainEnterpriseMappings = ParseMappings(_db.GetSetting("domain_mappings")),
@@ -51,6 +58,7 @@ public class WorkflowService
             ProxyForImap = BoolOr(_db.GetSetting("proxy_imap"), true),
             ProxyForDeepSeek = BoolOr(_db.GetSetting("proxy_deepseek"), false),
             ProxyForZoho = BoolOr(_db.GetSetting("proxy_zoho"), false),
+            ProxyForSmtp = BoolOr(_db.GetSetting("proxy_smtp"), false),
 
             ZohoApiBase = StrOr(_db.GetSetting("zoho_api_base"), "https://mail.zoho.com/api"),
             ZohoClientId = _db.GetSetting("zoho_client_id"),
@@ -88,6 +96,13 @@ public class WorkflowService
         _db.SetSetting("imap_password", CredentialService.Protect(c.ImapPassword));
         _db.SetSetting("imap_folder", c.ImapFolder);
         _db.SetSetting("imap_sent_folder", c.ImapSentFolder);
+
+        _db.SetSetting("smtp_host", c.SmtpHost);
+        _db.SetSetting("smtp_port", c.SmtpPort.ToString());
+        _db.SetSetting("smtp_ssl", c.SmtpUseSsl.ToString());
+        _db.SetSetting("smtp_username", c.SmtpUsername);
+        _db.SetSetting("smtp_password", CredentialService.Protect(c.SmtpPassword));
+
         _db.SetSetting("monitored_addresses", string.Join(";", c.MonitoredAddresses));
         _db.SetSetting("my_support_domains", string.Join(";", c.MySupportDomains));
         _db.SetSetting("domain_mappings", JsonSerializer.Serialize(c.DomainEnterpriseMappings));
@@ -107,6 +122,7 @@ public class WorkflowService
         _db.SetSetting("proxy_imap", c.ProxyForImap.ToString());
         _db.SetSetting("proxy_deepseek", c.ProxyForDeepSeek.ToString());
         _db.SetSetting("proxy_zoho", c.ProxyForZoho.ToString());
+        _db.SetSetting("proxy_smtp", c.ProxyForSmtp.ToString());
 
         _db.SetSetting("zoho_api_base", c.ZohoApiBase);
         _db.SetSetting("zoho_client_id", c.ZohoClientId);
@@ -1041,22 +1057,35 @@ public class WorkflowService
         }
     }
 
-    /// <summary>发送工单邮件（Zoho Mail REST API，需要 ZohoMail.messages.CREATE scope）。发件人 = 当前账号。返回 (成功, 错误信息)。</summary>
+    /// <summary>发送工单邮件（Zoho Mail REST 优先；未配置 Zoho 时回退 SMTP 发送）。
+    /// Zoho 需要 ZohoMail.messages.CREATE scope，发件人=当前账号；SMTP 需在“设置→SMTP 发送”配置服务器。
+    /// 返回 (成功, 错误信息)。</summary>
     public async Task<(bool Success, string? Error)> SendTicketEmailAsync(
         string to, string? cc, string subject, string content,
         IEnumerable<string>? attachments = null, CancellationToken ct = default)
     {
-        if (string.IsNullOrEmpty(_config.ZohoClientId) || string.IsNullOrEmpty(_config.ZohoRefreshToken))
-            return (false, "未配置 Zoho REST API，无法发送邮件。");
-        var from = _config.ImapUsername;
-        if (string.IsNullOrEmpty(from))
-            return (false, "未配置发件邮箱（同步设置中的账号）。");
+        bool zohoOk = !string.IsNullOrEmpty(_config.ZohoClientId) && !string.IsNullOrEmpty(_config.ZohoRefreshToken);
+        bool smtpOk = !string.IsNullOrWhiteSpace(_config.SmtpHost);
+        if (!zohoOk && !smtpOk)
+            return (false, "未配置发送通道：请在“设置”→“Zoho REST API”（优先）或“SMTP 发送”（回退）中完成配置。");
         try
         {
-            var api = new ZohoMailApiService(_config);
-            var accountId = await api.GetAccountIdAsync(ct);
-            if (accountId == null) return (false, "无法获取 Zoho 账号，请检查 Zoho REST API 配置。");
-            return await api.SendEmailAsync(accountId.Value, from, to, cc, subject, content, "html", ct, attachments);
+            // Zoho REST：发件人必须是该 Zoho 账号地址（同步设置中的账号）
+            if (zohoOk)
+            {
+                var from = _config.ImapUsername;
+                if (string.IsNullOrEmpty(from))
+                    return (false, "未配置发件邮箱（同步设置中的 IMAP 账号）。");
+                var api = new ZohoMailApiService(_config);
+                var accountId = await api.GetAccountIdAsync(ct);
+                if (accountId == null) return (false, "无法获取 Zoho 账号，请检查 Zoho REST API 配置。");
+                return await api.SendEmailAsync(accountId.Value, from, to, cc, subject, content, "html", ct, attachments);
+            }
+            // SMTP 回退：账号/密码留空自动用 IMAP 凭据；发件人取 SMTP 账号或 IMAP 账号
+            var fromSmtp = string.IsNullOrWhiteSpace(_config.SmtpUsername) ? _config.ImapUsername : _config.SmtpUsername;
+            if (string.IsNullOrEmpty(fromSmtp))
+                return (false, "未配置发件邮箱（SMTP 账号或同步设置中的 IMAP 账号）。");
+            return await new SmtpSendService(_config).SendAsync(fromSmtp, to, cc, subject, content, attachments, ct);
         }
         catch (Exception ex)
         {

@@ -21,6 +21,7 @@ public partial class SettingsWindow : Window
         DataContext = _vm;
         DeepSeekKeyBox.Password = _vm.Config.DeepSeekApiKey;
         ImapPasswordBox.Password = _vm.Config.ImapPassword;
+        SmtpPasswordBox.Password = _vm.Config.SmtpPassword;
         ZohoClientIdBox.Password = _vm.Config.ZohoClientId;
         ZohoClientSecretBox.Password = _vm.Config.ZohoClientSecret;
         ZohoRefreshTokenBox.Password = _vm.Config.ZohoRefreshToken;
@@ -34,15 +35,17 @@ public partial class SettingsWindow : Window
         base.OnClosed(e);
     }
 
-    /// <summary>把「同步设置」「Zoho REST API」「IMAP」三个同步相关设置页移到最前（依次第 1/2/3）。</summary>
+    /// <summary>把「同步设置」「Zoho REST API」「IMAP」「SMTP 发送」四个同步/发送相关设置页移到最前（依次第 1/2/3/4）。</summary>
     private void ReorderTabs()
     {
         var sync = FindTab("同步设置");
         var zoho = FindTab("Zoho REST API");
         var imap = FindTab("IMAP");
+        var smtp = FindTab("SMTP 发送");
         if (sync != null) { MainTab.Items.Remove(sync); MainTab.Items.Insert(0, sync); }
         if (zoho != null) { MainTab.Items.Remove(zoho); MainTab.Items.Insert(1, zoho); }
         if (imap != null) { MainTab.Items.Remove(imap); MainTab.Items.Insert(2, imap); }
+        if (smtp != null) { MainTab.Items.Remove(smtp); MainTab.Items.Insert(3, smtp); }
     }
 
     private TabItem? FindTab(string header)
@@ -57,6 +60,7 @@ public partial class SettingsWindow : Window
     {
         _vm.Config.DeepSeekApiKey = DeepSeekKeyBox.Password;
         _vm.Config.ImapPassword = ImapPasswordBox.Password;
+        _vm.Config.SmtpPassword = SmtpPasswordBox.Password;
         _vm.Config.ZohoClientId = ZohoClientIdBox.Password;
         _vm.Config.ZohoClientSecret = ZohoClientSecretBox.Password;
         _vm.Config.ZohoRefreshToken = ZohoRefreshTokenBox.Password;
@@ -128,6 +132,37 @@ public partial class SettingsWindow : Window
         {
             ProxyTestText.Text = $"❌ 代理连接失败：{ex.Message}";
         }
+    }
+
+    /// <summary>用当前输入框（可能未保存）的 SMTP 凭据测试连接。</summary>
+    private async void TestSmtp_Click(object sender, RoutedEventArgs e)
+    {
+        var cfg = _vm.Config;
+        if (string.IsNullOrWhiteSpace(cfg.SmtpHost))
+        {
+            SmtpTestText.Text = "请先填写 SMTP 服务器地址。";
+            return;
+        }
+        var test = new AppConfig
+        {
+            SmtpHost = cfg.SmtpHost,
+            SmtpPort = cfg.SmtpPort,
+            SmtpUseSsl = cfg.SmtpUseSsl,
+            SmtpUsername = cfg.SmtpUsername,
+            SmtpPassword = SmtpPasswordBox.Password,
+            // SMTP 账号/密码留空时回退用 IMAP 凭据（与真实发送逻辑一致），测试时带上 IMAP 凭据兜底
+            ImapUsername = cfg.ImapUsername,
+            ImapPassword = ImapPasswordBox.Password,
+            // 带上代理设置：SMTP 走代理（如开启）
+            UseProxy = cfg.UseProxy,
+            ProxyType = cfg.ProxyType,
+            ProxyHost = cfg.ProxyHost,
+            ProxyPort = cfg.ProxyPort,
+            ProxyForSmtp = cfg.ProxyForSmtp
+        };
+        SmtpTestText.Text = "正在测试…";
+        var (_, msg) = await new Services.SmtpSendService(test).TestAsync();
+        SmtpTestText.Text = msg;
     }
 
     /// <summary>用当前输入框（可能未保存）的 IMAP 凭据测试连接。</summary>

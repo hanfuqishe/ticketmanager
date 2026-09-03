@@ -252,15 +252,18 @@ public class ImapSyncService
         return null;
     }
 
-    private IProxyClient? CreateProxy()
+    private IProxyClient? CreateProxy() => CreateProxy(_config, _config.ProxyForImap);
+
+    /// <summary>按配置创建 MailKit 代理客户端（供 IMAP/SMTP 等客户端共用）。启用开关按目标分别控制（ProxyForImap/ProxyForSmtp）。</summary>
+    public static IProxyClient? CreateProxy(AppConfig config, bool enabled)
     {
-        if (!_config.UseProxy || !_config.ProxyForImap) return null;
-        if (string.IsNullOrEmpty(_config.ProxyHost)) return null;
-        return _config.ProxyType switch
+        if (!config.UseProxy || !enabled) return null;
+        if (string.IsNullOrEmpty(config.ProxyHost)) return null;
+        return config.ProxyType switch
         {
-            "Socks4" => new Socks4Client(_config.ProxyHost, _config.ProxyPort),
-            "Socks5" => new Socks5Client(_config.ProxyHost, _config.ProxyPort),
-            "Http" => new HttpProxyClient(_config.ProxyHost, _config.ProxyPort),
+            "Socks4" => new Socks4Client(config.ProxyHost, config.ProxyPort),
+            "Socks5" => new Socks5Client(config.ProxyHost, config.ProxyPort),
+            "Http" => new HttpProxyClient(config.ProxyHost, config.ProxyPort),
             _ => null
         };
     }

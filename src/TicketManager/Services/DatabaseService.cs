@@ -121,7 +121,9 @@ public class DatabaseService : IDisposable
             // 老库历史邮件一律视为“已尝试过 AI 元数据分析”：避免历史积压的缺字段邮件
             // （多为 AI 分析不出的厂商客服邮件）在之后每次同步都被重新交给 AI
             conn.Execute("UPDATE Emails SET MetaAnalyzed = 1 WHERE MetaAnalyzed = 0");
-        }        if (!emailCols.Contains("Starred"))
+        }
+
+        if (!emailCols.Contains("Starred"))
             conn.Execute("ALTER TABLE Emails ADD COLUMN Starred INTEGER NOT NULL DEFAULT 0");
         if (!emailCols.Contains("Ignored"))
             conn.Execute("ALTER TABLE Emails ADD COLUMN Ignored INTEGER NOT NULL DEFAULT 0");

@@ -810,7 +810,7 @@ public class WorkflowService
                     if (!string.IsNullOrWhiteSpace(kv.Key) && !string.IsNullOrWhiteSpace(kv.Value))
                         dict[kv.Key.Trim()] = kv.Value.Trim();
         }
-        catch { }
+        catch (Exception ex) { App.Log("ParseDomainMappings", ex); } // 配置损坏时静默回空，但要留痕便于排查
         return dict;
     }
 
@@ -934,7 +934,11 @@ public class WorkflowService
             var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(s) ?? new Dictionary<string, string>();
             return new Dictionary<string, string>(dict, StringComparer.OrdinalIgnoreCase);
         }
-        catch { return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); }
+        catch (Exception ex)
+        {
+            App.Log("LoadContactNames", ex); // 联系人映射损坏时回空，留痕便于排查
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
     }
 
     /// <summary>把邮箱列表格式化为 “姓名 <邮箱>”（姓名取联系人映射；无姓名则纯邮箱）。</summary>
@@ -1068,7 +1072,7 @@ public class WorkflowService
         var s = _db.GetSetting("signatures");
         if (string.IsNullOrWhiteSpace(s)) return new List<EmailSignature>();
         try { return JsonSerializer.Deserialize<List<EmailSignature>>(s) ?? new List<EmailSignature>(); }
-        catch { return new List<EmailSignature>(); }
+        catch (Exception ex) { App.Log("LoadSignatures", ex); return new List<EmailSignature>(); } // 签名损坏时回空，留痕便于排查
     }
 
     /// <summary>保存全部签名（覆盖）。</summary>

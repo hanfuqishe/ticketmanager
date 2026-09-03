@@ -59,6 +59,8 @@ public partial class MainWindow : Window
         };
         _vm.JumpToNewMailRequested += JumpNewMail;
         _vm.SelectionRestoredAfterMerge += RestoreSelectionInTree;
+        // 过滤开关（仅新邮件/仅星标/仅打开工单/显示被忽略）整树重建：UI 层捕获/重放展开，避免树塌回默认层级
+        _vm.PreservedRebuildRequested += RebuildPreservingExpansion;
         RenderEmailBody(); // 初始（空）正文
         _vm.AutoSyncAndListen(); // 启动后自动同步，随后进入自动收取新邮件模式
     }
@@ -1559,6 +1561,36 @@ public partial class MainWindow : Window
             "通过 Zoho Mail REST API 同步工单邮件，自动解析主题、按工单归组线程，" +
             "并用 AI 提炼标题、总结工单状态，按 客户/产品 组织展示。",
             "关于", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    /// <summary>过滤开关切换时在 UI 层保留展开状态重建：先同步捕获当前 TreeView 的真实展开/滚动，
+    /// 后台重建树，容器就绪（Loaded）后把展开与滚动重放回去，避免整树塌回默认层级。
+    /// 与 ReloadPreservingExpansion 同机制，但不重读数据库（内存 _threads 未变，重建更快）。</summary>
+    private void RebuildPreservingExpansion()
+    {
+        Mouse.OverrideCursor = Cursors.Wait; // 重建较耗时，先显示忙碌光标
+        // 重建前同步捕获当前真实展开状态（仅依赖 UI 容器，不依赖 VM 快照，最可靠）
+        var expanded = new HashSet<string>();
+        CaptureExpanded(TreeView, "", expanded);
+        double prevOffset = -1;
+        if (FindScrollViewer(TreeView) is { } sv) prevOffset = sv.VerticalOffset;
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            try
+            {
+                _vm.RefreshTree();
+                // 容器就绪后重放展开/滚动；滚动偏移可能延迟生效，多轮重试
+                Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+                {
+                    RestoreExpanded(TreeView, "", expanded);
+                    RestoreScrollOffset(prevOffset);
+                }));
+            }
+            finally
+            {
+                Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => Mouse.OverrideCursor = null));
+            }
+        }));
     }
 
     /// <summary>重建树时保留各节点的展开/折叠状态、滚动位置，保持“当前选中”线索选中且显示位置不变。</summary>

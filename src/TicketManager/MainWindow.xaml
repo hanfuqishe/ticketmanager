@@ -513,6 +513,12 @@
                         <Path Data="{StaticResource IconStar}" Fill="#F5A623" Width="15" Height="15" Stretch="Uniform"/>
                     </MenuItem.Icon>
                 </MenuItem>
+                <!-- 仅打开工单：隐藏 已解决/已完成/已关闭/合并或拆分为其他工单 的线索 -->
+                <MenuItem Header="仅显示打开的工单" IsCheckable="True" IsChecked="{Binding OpenOnly}">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconCheck}" Fill="#2B7DE9" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
+                </MenuItem>
                 <MenuItem Header="显示被忽略的邮件" IsCheckable="True" IsChecked="{Binding ShowIgnored}">
                     <MenuItem.Icon>
                         <Path Data="{StaticResource IconEyeOff}" Fill="#D9534F" Width="15" Height="15" Stretch="Uniform"/>
@@ -580,6 +586,15 @@
                     <StackPanel Orientation="Horizontal">
                         <Path Data="{StaticResource IconStar}" Fill="#F5A623" Width="14" Height="14" Stretch="Uniform" VerticalAlignment="Center"/>
                         <TextBlock Text=" 仅星标" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </ToggleButton>
+                <ToggleButton IsChecked="{Binding OpenOnly}" Style="{StaticResource ToolbarToggleButtonStyle}"
+                              MinWidth="82" Padding="8,3"
+                              FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center"
+                              ToolTip="只显示打开的工单（隐藏 已解决/已关闭/已合并到其他工单）">
+                    <StackPanel Orientation="Horizontal">
+                        <Path Data="{StaticResource IconCheck}" Fill="#43A047" Width="14" Height="14" Stretch="Uniform" VerticalAlignment="Center"/>
+                        <TextBlock Text=" 仅打开" VerticalAlignment="Center"/>
                     </StackPanel>
                 </ToggleButton>
                 <Border Width="1" Background="#C8C8C8" Margin="8,3,0,3"/>

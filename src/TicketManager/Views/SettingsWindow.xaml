@@ -7,6 +7,7 @@
     <Window.Resources>
         <StreamGeometry x:Key="IconEmail">M20,4H4C2.9,4 2,4.9 2,6V18C2,19.1 2.9,20 4,20H20C21.1,20 22,19.1 22,18V6C22,4.9 21.1,4 20,4M20,8L12,13L4,8V6L12,11L20,6V8Z</StreamGeometry>
         <StreamGeometry x:Key="IconDoc">M13,9H18.5L13,3.5V9M6,2H14L20,8V20A2,2 0 0,1 18,22H6C4.89,22 4,21.1 4,20V4C4,2.89 4.89,2 6,2M15,18V16H6V18H15M18,14V12H6V14H18Z</StreamGeometry>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
     </Window.Resources>
     <DockPanel Margin="14">
         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
@@ -65,6 +66,7 @@
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <TextBlock Grid.Row="0" Text="以下邮箱地址出现在邮件往来中时，该邮件才会被纳入监控（可配置多个）："
                                TextWrapping="Wrap" Foreground="#555"/>
@@ -92,6 +94,12 @@
                         <TextBlock Text="自动发现客服邮箱：扫描邮件时，发件/收件/抄送中，凡 @ 前包含 “support”、且 @ 后包含 “manageengine” 或 “zohocorp” 的邮箱地址自动加入关注（如 mdm-support@manageengine.com、support@zohocorp.com.cn）"
                                    TextWrapping="Wrap"/>
                     </CheckBox>
+                    <Border Grid.Row="4" Margin="0,10,0,0" Padding="10,6" CornerRadius="4"
+                            Background="#FFF4E5" BorderBrush="#FFD9A0" BorderThickness="1"
+                            Visibility="{Binding IsMonitoredEmpty, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="⚠ 关注列表为空：同步会采集邮件往来中出现的全部邮件（不限客服邮箱）。若邮件量很大，建议先加入客服邮箱地址后再同步。"
+                                   TextWrapping="Wrap" Foreground="#9A6700" FontSize="11"/>
+                    </Border>
                 </Grid>
             </TabItem>
 
@@ -158,6 +166,42 @@
                                 CommandParameter="{Binding SelectedItem, ElementName=MappingList}"
                                 Margin="8,0,0,0" Padding="12,4"/>
                     </StackPanel>
+                </Grid>
+            </TabItem>
+
+            <!-- ===== 产品简称 ===== -->
+            <TabItem Header="产品简称">
+                <Grid Margin="16">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0"
+                               Text="配置主题解析时“产品简称 → 产品全称”的对应关系（内置已有 EC→Endpoint Central、OPM→OPManager）。新增产品只需在此添加，例如 ue → UEM Central；主题/长标题中出现该简称即被规范为全称。"
+                               TextWrapping="Wrap" Foreground="#555"/>
+                    <ListBox x:Name="AliasList" Grid.Row="1" ItemsSource="{Binding ProductAliasItems}" Margin="0,10"
+                             BorderBrush="#ccc">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding}" Foreground="#1f3a5f"/>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <StackPanel Grid.Row="2" Orientation="Horizontal">
+                        <TextBox Text="{Binding NewAliasShort, UpdateSourceTrigger=PropertyChanged}" Width="150" Padding="4"
+                                 VerticalAlignment="Center" ToolTip="产品简称，如 ue"/>
+                        <TextBlock Text=" → " VerticalAlignment="Center" Margin="4,0"/>
+                        <TextBox Text="{Binding NewAliasFull, UpdateSourceTrigger=PropertyChanged}" Width="210" Padding="4"
+                                 VerticalAlignment="Center" ToolTip="产品全称，如 UEM Central"/>
+                        <Button Content="添加" Command="{Binding AddAliasCommand}" Margin="8,0,0,0" Padding="12,4"/>
+                        <Button Content="删除选中" Command="{Binding RemoveAliasCommand}"
+                                CommandParameter="{Binding SelectedItem, ElementName=AliasList}"
+                                Margin="8,0,0,0" Padding="12,4"/>
+                    </StackPanel>
+                    <TextBlock Grid.Row="3" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,8,0,0"
+                               Text="保存后即时生效；已同步邮件需下次「同步」重新解析主题后按新简称归一（已手工指定产品/客户的不会被覆盖）。"/>
                 </Grid>
             </TabItem>
 

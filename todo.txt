@@ -9,11 +9,11 @@
 - ✅ 数据反序列化静默失败补 error.log（域名→企业映射 / 联系人 / 签名），保留兜底行为。
 - ✅ SMTP 发送回退：未配置 Zoho REST 时“提新工单/回复”改走 MailKit SMTP（设置→SMTP 发送，
     账号/密码留空回退用 IMAP 凭据，支持代理与“测试连接”）；代理创建抽取 ImapSyncService.CreateProxy 共用。
+- ✅ 产品简称可配置：设置→产品简称 新增“简称→全称”映射（内置 EC/OPM + 自定义，启动/保存时注入
+    SubjectParser.SetAliases，主题解析即用）；AppConfig.ProductAliases 持久化。
+- ✅ 空关注列表提示：设置→关注的客服邮箱 列表为空时黄底警示“将采集全部邮件”，增删后即时刷新。
 
 ## 待办 / 可继续优化
-1. 巨型类拆分：WorkflowService(≈1340)/MainViewModel(≈1500)/MainWindow.xaml.cs(≈1680) 行数过大，
+1. 巨型类拆分：WorkflowService/MainViewModel/MainWindow.xaml.cs 行数过大，
    → 按 同步 / 发信 / 联系人 / 导出 拆成独立服务，UI 业务逻辑逐步下沉 VM。
-2. 主题解析 SubjectParser.ProductAliases 仅硬编码 EC/OPM，新产品简称需追加或改为可配置。
-3. 关注客服邮箱为空时当前会全量采集邮件（IsMonitored* 直接返回 true）——
-   若需限制，在 UI 上明确提示“未配置客服邮箱时拉取全部邮件”。
-4. 大量 UI 事件为 async void + 空 catch（MainWindow.xaml.cs）——逐步改为可等待、可留痕。
+2. 大量 UI 事件为 async void + 空 catch（MainWindow.xaml.cs）——逐步改为可等待、可留痕。

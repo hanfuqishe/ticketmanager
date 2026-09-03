@@ -69,6 +69,9 @@ public class SettingsViewModel : ViewModelBase
     private int _selectedProxyIndex = 1;
     public int SelectedProxyIndex { get => _selectedProxyIndex; set => Set(ref _selectedProxyIndex, value); }
 
+    /// <summary>关注客服邮箱是否为空（为空时同步会采集往来中全部邮件，UI 提示用）。</summary>
+    public bool IsMonitoredEmpty => MonitoredAddresses.Count == 0;
+
     private string _newAddress = "";
     public string NewAddress { get => _newAddress; set => Set(ref _newAddress, value); }
 
@@ -91,6 +94,18 @@ public class SettingsViewModel : ViewModelBase
     public ICommand AddMappingCommand { get; }
     public ICommand RemoveMappingCommand { get; }
 
+    /// <summary>产品简称编辑项（显示 “简称 → 全称”，如 “ue → UEM Central”）。</summary>
+    public ObservableCollection<string> ProductAliasItems { get; } = new();
+
+    private string _newAliasShort = "";
+    public string NewAliasShort { get => _newAliasShort; set => Set(ref _newAliasShort, value); }
+
+    private string _newAliasFull = "";
+    public string NewAliasFull { get => _newAliasFull; set => Set(ref _newAliasFull, value); }
+
+    public ICommand AddAliasCommand { get; }
+    public ICommand RemoveAliasCommand { get; }
+
     public SettingsViewModel(WorkflowService workflow)
     {
         _workflow = workflow;
@@ -107,7 +122,11 @@ public class SettingsViewModel : ViewModelBase
         AddAddressCommand = new RelayCommand(_ => AddAddress());
         RemoveAddressCommand = new RelayCommand(p =>
         {
-            if (p is string s) MonitoredAddresses.Remove(s);
+            if (p is string s)
+            {
+                MonitoredAddresses.Remove(s);
+                OnPropertyChanged(nameof(IsMonitoredEmpty));
+            }
         });
 
         AddSupportDomainCommand = new RelayCommand(_ => AddSupportDomain());
@@ -118,11 +137,19 @@ public class SettingsViewModel : ViewModelBase
 
         foreach (var kv in _config.DomainEnterpriseMappings)
             DomainMappings.Add($"{kv.Key} → {kv.Value}");
+        foreach (var kv in _config.ProductAliases)
+            ProductAliasItems.Add($"{kv.Key} → {kv.Value}");
 
         AddMappingCommand = new RelayCommand(_ => AddMapping());
         RemoveMappingCommand = new RelayCommand(p =>
         {
             if (p is string s) DomainMappings.Remove(s);
+        });
+
+        AddAliasCommand = new RelayCommand(_ => AddAlias());
+        RemoveAliasCommand = new RelayCommand(p =>
+        {
+            if (p is string s) ProductAliasItems.Remove(s);
         });
     }
 
@@ -131,7 +158,10 @@ public class SettingsViewModel : ViewModelBase
         var a = NewAddress.Trim();
         if (a.Length == 0) return;
         if (!MonitoredAddresses.Any(x => string.Equals(x, a, StringComparison.OrdinalIgnoreCase)))
+        {
             MonitoredAddresses.Add(a);
+            OnPropertyChanged(nameof(IsMonitoredEmpty));
+        }
         NewAddress = "";
     }
 
@@ -155,6 +185,18 @@ public class SettingsViewModel : ViewModelBase
         NewEnterprise = "";
     }
 
+    /// <summary>添加 产品简称→全称 映射（key 不区分大小写）。</summary>
+    private void AddAlias()
+    {
+        var sh = NewAliasShort.Trim();
+        var full = NewAliasFull.Trim();
+        if (sh.Length == 0 || full.Length == 0) return;
+        if (!ProductAliasItems.Any(x => x.StartsWith(sh + " → ", StringComparison.OrdinalIgnoreCase)))
+            ProductAliasItems.Add($"{sh} → {full}");
+        NewAliasShort = "";
+        NewAliasFull = "";
+    }
+
     public void Save()
     {
         _config.MonitoredAddresses = MonitoredAddresses.ToList();
@@ -169,6 +211,16 @@ public class SettingsViewModel : ViewModelBase
             if (d.Length > 0 && en.Length > 0) dict[d] = en;
         }
         _config.DomainEnterpriseMappings = dict;
+        var aliasDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in ProductAliasItems)
+        {
+            var idx = entry.IndexOf(" → ");
+            if (idx < 0) continue;
+            var sh = entry[..idx].Trim();
+            var full = entry[(idx + 3)..].Trim();
+            if (sh.Length > 0 && full.Length > 0) aliasDict[sh] = full;
+        }
+        _config.ProductAliases = aliasDict;
         if (SelectedProxyIndex >= 0 && SelectedProxyIndex < ProxyTypes.Length)
             _config.ProxyType = ProxyTypes[SelectedProxyIndex];
         _config.EnableAutoSync = EnableAutoSync;

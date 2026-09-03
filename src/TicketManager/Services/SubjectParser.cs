@@ -29,12 +29,29 @@ public static class SubjectParser
         @"^(?:\[(?<sq>[^\]]*)\]|【(?<cq>[^】]*)】)\s*",
         RegexOptions.Compiled);
 
-    /// <summary>产品简称 → 全称（不区分大小写，新增简称在此追加）。</summary>
-    private static readonly Dictionary<string, string> ProductAliases = new(StringComparer.OrdinalIgnoreCase)
+    /// <summary>内置产品简称 → 全称（不区分大小写）。新增/修改产品简称请在「设置 → 产品简称」中配置，无需改代码。</summary>
+    private static readonly Dictionary<string, string> DefaultAliases = new(StringComparer.OrdinalIgnoreCase)
     {
         ["ec"] = "Endpoint Central",
         ["opm"] = "OPManager"
     };
+
+    /// <summary>当前生效的简称表 = 内置 + 用户自定义。不可变引用，由 <see cref="SetAliases"/> 整体替换，避免并发读写竞争。</summary>
+    private static volatile Dictionary<string, string> _aliases = DefaultAliases;
+
+    /// <summary>注入用户自定义 产品简称→全称 映射（追加/覆盖内置表）。在配置加载/保存后调用。</summary>
+    public static void SetAliases(IEnumerable<KeyValuePair<string, string>>? extra)
+    {
+        if (extra == null) { _aliases = DefaultAliases; return; }
+        var merged = new Dictionary<string, string>(DefaultAliases, StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in extra)
+            if (!string.IsNullOrWhiteSpace(kv.Key) && !string.IsNullOrWhiteSpace(kv.Value))
+                merged[kv.Key.Trim()] = kv.Value.Trim();
+        _aliases = merged;
+    }
+
+    /// <summary>当前生效的简称表（只读视图，供诊断/展示）。</summary>
+    public static IReadOnlyDictionary<string, string> CurrentAliases => _aliases;
 
     public static ParsedSubject? Parse(string subject)
     {
@@ -108,7 +125,7 @@ public static class SubjectParser
         for (int i = 0; i < words.Length; i++)
         {
             var key = words[i].Trim().TrimEnd('：', ':', '，', ',', '(', ')', '（', '）');
-            if (ProductAliases.TryGetValue(key, out var full))
+            if (_aliases.TryGetValue(key, out var full))
             {
                 var rest = string.Join(" ", words.Where((_, j) => j != i)).Trim();
                 return (full, rest);
@@ -117,11 +134,11 @@ public static class SubjectParser
         return ("", title);
     }
 
-    /// <summary>产品简称规范化：EC→Endpoint Central，OPM→OPManager 等。</summary>
+    /// <summary>产品简称规范化：EC→Endpoint Central，OPM→OPManager 等（含设置里自定义的简称）。</summary>
     public static string NormalizeProduct(string product)
     {
         if (string.IsNullOrEmpty(product)) return product;
-        return ProductAliases.TryGetValue(product.Trim(), out var full) ? full : product;
+        return _aliases.TryGetValue(product.Trim(), out var full) ? full : product;
     }
 
     /// <summary>把标签分给 产品/企业：一英一中时英文=产品、中文=企业；同语言按出现顺序。</summary>

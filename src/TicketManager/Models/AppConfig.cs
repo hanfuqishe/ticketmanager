@@ -28,6 +28,9 @@ public class AppConfig
     // ===== 域名→企业 映射（用于从抄送/收件人地址推断企业） =====
     public Dictionary<string, string> DomainEnterpriseMappings { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
+    // ===== 产品简称 → 全称（主题解析用；内置 EC/OPM，可在设置中扩展新产品） =====
+    public Dictionary<string, string> ProductAliases { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     // ===== DeepSeek / 主流 AI（OpenAI 兼容接口） =====
     public string DeepSeekApiKey { get; set; } = "";
     public string DeepSeekBaseUrl { get; set; } = "https://api.deepseek.com";

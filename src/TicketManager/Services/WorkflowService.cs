@@ -42,6 +42,7 @@ public class WorkflowService
             MonitoredAddresses = SplitList(_db.GetSetting("monitored_addresses")),
             MySupportDomains = SplitList(_db.GetSetting("my_support_domains")),
             DomainEnterpriseMappings = ParseMappings(_db.GetSetting("domain_mappings")),
+            ProductAliases = ParseMappings(_db.GetSetting("product_aliases")),
 
             DeepSeekApiKey = CredentialService.Unprotect(_db.GetSetting("deepseek_key")),
             DeepSeekBaseUrl = StrOr(_db.GetSetting("deepseek_baseurl"), "https://api.deepseek.com"),
@@ -77,6 +78,7 @@ public class WorkflowService
             SyncMode = StrOr(_db.GetSetting("sync_mode"), "Auto"),
             AutoTrackSupportMailboxes = BoolOr(_db.GetSetting("auto_track_support"), true)
         };
+        SubjectParser.SetAliases(_config.ProductAliases); // 把自定义产品简称注入解析器（内置 EC/OPM + 自定义）
         return _config;
     }
 
@@ -106,6 +108,7 @@ public class WorkflowService
         _db.SetSetting("monitored_addresses", string.Join(";", c.MonitoredAddresses));
         _db.SetSetting("my_support_domains", string.Join(";", c.MySupportDomains));
         _db.SetSetting("domain_mappings", JsonSerializer.Serialize(c.DomainEnterpriseMappings));
+        _db.SetSetting("product_aliases", JsonSerializer.Serialize(c.ProductAliases));
 
         _db.SetSetting("deepseek_key", CredentialService.Protect(c.DeepSeekApiKey));
         _db.SetSetting("deepseek_baseurl", c.DeepSeekBaseUrl);
@@ -141,6 +144,7 @@ public class WorkflowService
         _db.SetSetting("sync_mode", c.SyncMode);
         _db.SetSetting("auto_track_support", c.AutoTrackSupportMailboxes.ToString());
         _config = c;
+        SubjectParser.SetAliases(c.ProductAliases); // 设置保存后立即让新简称对后续解析生效
         // 关注的客服邮箱发生变化（新增/删除）→ 重置同步游标，下次同步重新拉取时间窗口内的邮件
         if (!SameMonitoredSet(oldMonitored, c.MonitoredAddresses))
             ResetSyncCursors();

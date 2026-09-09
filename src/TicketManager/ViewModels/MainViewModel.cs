@@ -1163,33 +1163,16 @@ public class MainViewModel : ViewModelBase
         AfterEmailsSeen(target.ThreadOwner.Thread); // 已结束线索看完后自动回隐；并刷新托盘角标
     }
 
-    /// <summary>切换星标：根邮件（线索行）→ 整条线索所有邮件批量加/取消星标；其余邮件 → 只切本封。</summary>
+    /// <summary>切换某封邮件的星标（邮件级：只对本封生效，不波及其他邮件）。
+    /// 不因星标变化立即重建“仅星标”过滤视图：线索是否继续显示，在切换过滤开关/搜索/下次重建时统一评估。</summary>
     public void ToggleStar(EmailNodeViewModel node)
     {
-        if (node.IsRoot)
-        {
-            // 线索星标：线索内任一邮件有星标 → 全部清除；否则全部标星
-            var thread = node.ThreadOwner.Thread;
-            var hasStar = thread.Emails.Any(e => e.Starred);
-            foreach (var e in thread.Emails)
-            {
-                e.Starred = !hasStar;
-                _workflow.SetEmailStarred(e.Id, !hasStar);
-            }
-            foreach (var root in node.ThreadOwner.Children)
-                RefreshSubtreeStar(root);
-            StatusText = hasStar ? $"已清除线索内 {thread.Emails.Count} 封邮件的星标" : $"已为该线索 {thread.Emails.Count} 封邮件标星";
-        }
-        else
-        {
-            node.Email.Starred = !node.Email.Starred;
-            _workflow.SetEmailStarred(node.Email.Id, node.Email.Starred);
-            node.RefreshStarState();
-            // 单封星标变化会影响线索首节点（根）的“有星标”聚合显示，需一并刷新整条线索
-            foreach (var root in node.ThreadOwner.Children)
-                RefreshSubtreeStar(root);
-        }
-        // 不因星标变化立即重建“仅星标”过滤视图：取消星标后线索仍保留显示，直到切换开关/搜索/下次重建
+        node.Email.Starred = !node.Email.Starred;
+        _workflow.SetEmailStarred(node.Email.Id, node.Email.Starred);
+        node.RefreshStarState(); // 本行自身星标
+        // 线索首封（根）行的“空心星”提示取决于线索其它邮件是否含星标，一并刷新
+        foreach (var root in node.ThreadOwner.Children)
+            if (root.IsRoot) root.RefreshStarState();
     }
 
     /// <summary>切换某封邮件的“忽略”状态。忽略：先请求主窗口对该行播放“淡出+行收缩”动画，动画结束由主窗口调
@@ -1217,13 +1200,6 @@ public class MainViewModel : ViewModelBase
         StatusText = "已忽略该邮件（可在“视图”→“显示被忽略的邮件”中查看）";
         _threads = _workflow.LoadThreads();
         MergeThreads(_threads);
-    }
-
-    /// <summary>递归刷新星标显示（批量切换线索星标后调用）。</summary>
-    private static void RefreshSubtreeStar(EmailNodeViewModel n)
-    {
-        n.RefreshStarState();
-        foreach (var c in n.Children) RefreshSubtreeStar(c);
     }
 
     /// <summary>把指定范围内的所有线索（客户/产品）的所有邮件标记为已读，并就地刷新加粗状态。</summary>

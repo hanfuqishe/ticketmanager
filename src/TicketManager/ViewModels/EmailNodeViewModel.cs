@@ -89,16 +89,27 @@ public class EmailNodeViewModel : ViewModelBase
     /// <summary>本邮件是否为最近同步新增（用于高亮与跳转）。</summary>
     public bool IsNew => Email.IsNew;
 
-    /// <summary>本邮件是否已标星：根邮件（线索行）反映线索内是否有星标邮件，其余邮件反映自身星标。</summary>
-    public bool IsStarred => IsRoot ? ThreadOwner.Thread.Emails.Any(e => e.Starred) : Email.Starred;
+    /// <summary>本邮件是否已标星（邮件级：根线索行也只反映首封邮件自身的星标；线索内其它邮件各有自己的星标）。</summary>
+    public bool IsStarred => Email.Starred;
+
+    /// <summary>线索内（本封之外）是否另有已标星邮件：用于线索首封（根）行的“空心星标”提示，指引展开查看。</summary>
+    public bool ThreadHasOtherStar =>
+        IsRoot && !Email.Starred && ThreadOwner.Thread.Emails.Any(e => e.Starred);
+
+    /// <summary>星标按钮提示文字，随状态区分（便于确认当前是哪一种）。</summary>
+    public string StarTip => ThreadHasOtherStar
+        ? "线索内其它邮件已标星（本封未标）\n点击：为本封标星"
+        : IsStarred ? "取消本封星标" : "为本封标星";
 
     /// <summary>本邮件是否已被忽略（被忽略邮件单独收集在“被忽略的邮件”分组）。</summary>
     public bool IsIgnored => Email.Ignored;
 
-    /// <summary>星标状态变化后刷新图标（点击切换后调用）。</summary>
+    /// <summary>星标状态变化后刷新图标（点击切换后调用）：实心星=本封已标；空心星=线索其它封有标。</summary>
     public void RefreshStarState()
     {
         OnPropertyChanged(nameof(IsStarred));
+        OnPropertyChanged(nameof(ThreadHasOtherStar));
+        OnPropertyChanged(nameof(StarTip));
     }
 
     /// <summary>根邮件且线索内含新同步邮件（用于根线索高亮）。</summary>

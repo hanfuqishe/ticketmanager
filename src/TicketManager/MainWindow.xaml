@@ -378,14 +378,23 @@
                     <!-- 行1：状态徽章 + 标题（占满剩余）+ 星标固定在行右边缘，各行星标纵向对齐成竖线 -->
                     <DockPanel>
                         <Button DockPanel.Dock="Right" Background="Transparent" BorderThickness="0" Padding="3,0"
-                                VerticalAlignment="Center" Click="ToggleStar_Click" ToolTip="标星/取消星标">
-                            <Path Data="{StaticResource IconStar}" Width="13" Height="13" Stretch="Uniform">
+                                VerticalAlignment="Center" Click="ToggleStar_Click" ToolTip="{Binding StarTip}">
+                            <Path Data="{StaticResource IconStar}" Width="12" Height="12" Stretch="Uniform">
                                 <Path.Style>
                                     <Style TargetType="Path">
+                                        <!-- 灰=本封无星；实心黄=本封已标星；空心黄描边=本封未标但线索内其它邮件有星标（根行提示） -->
                                         <Setter Property="Fill" Value="#C9C9C9"/>
+                                        <Setter Property="Stroke" Value="Transparent"/>
+                                        <Setter Property="StrokeThickness" Value="1.2"/>
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding IsStarred}" Value="True">
                                                 <Setter Property="Fill" Value="#F5A623"/>
+                                                <Setter Property="Stroke" Value="Transparent"/>
+                                            </DataTrigger>
+                                            <!-- 空心星：白色不透明内芯（不透出根行浅蓝/悬停底色）+ 深黄描边 -->
+                                            <DataTrigger Binding="{Binding ThreadHasOtherStar}" Value="True">
+                                                <Setter Property="Fill" Value="#FFFFFF"/>
+                                                <Setter Property="Stroke" Value="#E09E00"/>
                                             </DataTrigger>
                                         </Style.Triggers>
                                     </Style>

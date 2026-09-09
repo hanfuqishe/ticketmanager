@@ -26,6 +26,9 @@ public class ReplyTicketViewModel : ViewModelBase
     public List<ReplyRecipient> Recipients { get; }
     public List<string> SignatureNames { get; }
 
+    /// <summary>被回复邮件 收件/抄送 中自动抄送的相关方（除 发件人/本人），并入默认抄送展示。</summary>
+    private readonly List<string> _autoCc = new();
+
     /// <summary>回复标题：Re: 原标题（保留工单号，便于回收到同一线索）。</summary>
     public string Subject
     {
@@ -50,10 +53,12 @@ public class ReplyTicketViewModel : ViewModelBase
     }
     private ReplyRecipient? _selectedRecipient;
 
-    /// <summary>抄送邮箱（其余所有候选人，用逗号连接——Zoho 发信接口只接受逗号分隔，分号会报“收件人地址中含有特殊字符”）。</summary>
+    /// <summary>默认抄送邮箱 = 其余所有收件人候选 + 自动抄送的原邮件相关方，统一提纯去重，用逗号连接
+    /// （Zoho 发信接口只接受逗号分隔，分号会报“收件人地址中含有特殊字符”）。</summary>
     public string CcEmails => string.Join(",", Recipients
         .Where(r => !ReferenceEquals(r, SelectedRecipient))
         .Select(r => WorkflowService.ExtractEmail(r.Email))
+        .Concat(_autoCc.Select(WorkflowService.ExtractEmail))
         .Where(e => e.Length > 0)
         .Distinct(StringComparer.OrdinalIgnoreCase));
     public string CcDisplay => string.IsNullOrEmpty(CcEmails) ? "（无）" : CcEmails;
@@ -70,6 +75,12 @@ public class ReplyTicketViewModel : ViewModelBase
     {
         var email = WorkflowService.ExtractEmail(display);
         if (string.IsNullOrEmpty(email)) return;
+        // 已在默认抄送（收件人候选/自动相关方）则无需再进“额外抄送”，避免两处重复显示
+        if (CcEmails.Split(',').Any(a => string.Equals(WorkflowService.ExtractEmail(a), email, StringComparison.OrdinalIgnoreCase)))
+        {
+            StatusText = "该同事已在默认抄送中";
+            return;
+        }
         var list = (ExtraCcEmails ?? "").Split(';', ',')
             .Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
         if (!list.Any(x => string.Equals(WorkflowService.ExtractEmail(x), email, StringComparison.OrdinalIgnoreCase)))
@@ -199,6 +210,25 @@ public class ReplyTicketViewModel : ViewModelBase
         _signature = SignatureNames.FirstOrDefault() ?? "";
         ColleagueCcOptions = workflow.FormatRecipients(workflow.GetColleagueContacts());
 
+        // 自动抄送：被回复邮件的 收件人/抄送 中，除 发件人（客服，作为主收件人候选）与 本人 之外的地址，
+        // 一律自动并入“默认抄送”并与其余候选去重，保证原邮件里的相关方都知情
+        // （例：客服的回复发给 ye.jing@manageengine.cn，我们再回信时自动抄送 ye.jing）。
+        var autoCc = new List<string>();
+        foreach (var raw in new[] { email.ToAddresses, email.CcAddresses })
+        {
+            if (string.IsNullOrWhiteSpace(raw)) continue;
+            foreach (var token in raw.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                var em = WorkflowService.ExtractEmail(token);
+                if (string.IsNullOrEmpty(em)) continue;
+                if (string.Equals(em, email.FromAddress, StringComparison.OrdinalIgnoreCase)) continue;   // 发件人（客服）→ 主收件人候选
+                if (string.Equals(em, workflow.Config.ImapUsername, StringComparison.OrdinalIgnoreCase)) continue; // 本人
+                if (autoCc.Any(x => string.Equals(WorkflowService.ExtractEmail(x), em, StringComparison.OrdinalIgnoreCase))) continue;
+                autoCc.Add(token);
+            }
+        }
+        _autoCc.AddRange(autoCc); // 并入默认抄送（不写入“额外抄送”输入框）
+
         SendCommand = new RelayCommand(async _ => await SendAsync(), _ => CanSend);
         TranslateCommand = new RelayCommand(async _ => await TranslateAsync(), _ => !IsTranslating && !IsSending);
     }
@@ -226,7 +256,15 @@ public class ReplyTicketViewModel : ViewModelBase
         try
         {
             var ccAll = BuildCc();
-            var cc = string.IsNullOrEmpty(ccAll) ? null : ccAll;
+            // 剔除主收件人自身（避免原收件/抄送里出现主收件人时自我抄送），再按逗号连接
+            var toEmail = WorkflowService.ExtractEmail(to);
+            var ccList = (ccAll ?? "")
+                .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(WorkflowService.ExtractEmail)
+                .Where(e => e.Length > 0 && !string.Equals(e, toEmail, StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var cc = ccList.Count > 0 ? string.Join(",", ccList) : null;
             var content = BuildBodyHtml();
             var (ok, err) = await _workflow.SendTicketEmailAsync(
                 to, cc, Subject, content, Attachments.Count > 0 ? Attachments.ToList() : null, default);

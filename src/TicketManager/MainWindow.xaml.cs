@@ -61,6 +61,7 @@ public partial class MainWindow : Window
         _vm.SelectionRestoredAfterMerge += RestoreSelectionInTree;
         _vm.ClosedThreadFadeOutRequested += OnClosedThreadFadeOut;
         _vm.IgnoreFadeOutRequested += OnIgnoreFadeOut;
+        _vm.NewMailCountChanged += UpdateTrayBadge; // 已读后即时刷新托盘角标（无新邮件即清除）
         RenderEmailBody(); // 初始（空）正文
         _vm.AutoSyncAndListen(); // 启动后自动同步，随后进入自动收取新邮件模式
     }

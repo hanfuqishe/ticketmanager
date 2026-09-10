@@ -76,6 +76,7 @@ public class WorkflowService
             SyncConcurrency = Math.Clamp(IntOr(_db.GetSetting("sync_concurrency"), 5), 1, 10),
             EnableAutoSync = BoolOr(_db.GetSetting("auto_sync"), true),
             SyncMode = StrOr(_db.GetSetting("sync_mode"), "Auto"),
+            AutoSyncMinutes = Math.Clamp(IntOr(_db.GetSetting("auto_sync_minutes"), 15), 1, 1440),
             AutoTrackSupportMailboxes = BoolOr(_db.GetSetting("auto_track_support"), true)
         };
         SubjectParser.SetAliases(_config.ProductAliases); // 把自定义产品简称注入解析器（内置 EC/OPM + 自定义）
@@ -142,6 +143,8 @@ public class WorkflowService
         _db.SetSetting("sync_concurrency", c.SyncConcurrency.ToString());
         _db.SetSetting("auto_sync", c.EnableAutoSync.ToString());
         _db.SetSetting("sync_mode", c.SyncMode);
+        c.AutoSyncMinutes = Math.Clamp(c.AutoSyncMinutes, 1, 1440);
+        _db.SetSetting("auto_sync_minutes", c.AutoSyncMinutes.ToString());
         _db.SetSetting("auto_track_support", c.AutoTrackSupportMailboxes.ToString());
         _config = c;
         SubjectParser.SetAliases(c.ProductAliases); // 设置保存后立即让新简称对后续解析生效
@@ -580,7 +583,7 @@ public class WorkflowService
     /// </summary>
     public async Task RunAutoSyncLoopAsync(Action<int>? onSynced, IProgress<string>? progress, CancellationToken ct)
     {
-        // Zoho REST 模式：轮询（每 2 分钟自动同步一次，增量+断点续传，无新邮件时开销很小）
+        // Zoho REST 模式：轮询（按设置的“自动刷新周期”，默认 15 分钟；增量+断点续传，无新邮件时开销很小）
         bool useZoho = ResolveSyncMode() == "Zoho";
         if (useZoho)
         {
@@ -592,7 +595,7 @@ public class WorkflowService
                     var n = await SyncAndProcessAsync(progress, ct);
                     if (n > 0) onSynced?.Invoke(n);
                 }
-                // 仅用户主动停止(ct 已取消)才退出循环；网络超时/中断(TaskCanceledException)当作失败继续 2 分钟后重试
+                // 仅用户主动停止(ct 已取消)才退出循环；网络超时/中断(TaskCanceledException)当作失败继续等下一个周期重试
                 catch (OperationCanceledException)
                 {
                     if (ct.IsCancellationRequested) { progress?.Report("自动收取已停止"); break; }
@@ -601,7 +604,7 @@ public class WorkflowService
                 {
                     progress?.Report($"自动同步失败：{ex.Message}");
                 }
-                try { await Task.Delay(TimeSpan.FromMinutes(2), ct); }
+                try { await Task.Delay(TimeSpan.FromMinutes(Math.Clamp(_config.AutoSyncMinutes, 1, 1440)), ct); }
                 catch (OperationCanceledException) { progress?.Report("自动收取已停止"); break; }
             }
             return;

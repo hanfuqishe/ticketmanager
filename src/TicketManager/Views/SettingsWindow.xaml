@@ -28,6 +28,7 @@
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
@@ -53,8 +54,17 @@
                         <TextBlock Text="⚠ 并发下载会同时建立多条连接，数值过大可能触发邮箱服务器的限流甚至封禁，请谨慎设置。" Foreground="#C62828" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/>
                     </StackPanel>
 
-                    <TextBlock Grid.Row="3" Grid.Column="0" Text="数据文件：" VerticalAlignment="Top" Margin="0,6,0,0"/>
-                    <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding DbPath, Mode=OneWay}" IsReadOnly="True" Margin="8,4" Padding="4" Foreground="Gray"/>
+                    <TextBlock Grid.Row="3" Grid.Column="0" Text="自动刷新：" VerticalAlignment="Center"/>
+                    <StackPanel Grid.Row="3" Grid.Column="1" Margin="8,4">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBox Text="{Binding Config.AutoSyncMinutes}" Width="90" Padding="4" VerticalAlignment="Center"/>
+                            <TextBlock Text="分钟（默认 15）" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                        </StackPanel>
+                        <TextBlock Text="Zoho 轮询模式的自动同步间隔（1~1440 分钟）；IMAP 为实时监听，不受此项影响。" Foreground="#888" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/>
+                    </StackPanel>
+
+                    <TextBlock Grid.Row="4" Grid.Column="0" Text="数据文件：" VerticalAlignment="Top" Margin="0,6,0,0"/>
+                    <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding DbPath, Mode=OneWay}" IsReadOnly="True" Margin="8,4" Padding="4" Foreground="Gray"/>
                 </Grid>
             </TabItem>
 

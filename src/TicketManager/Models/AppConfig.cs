@@ -64,6 +64,7 @@ public class AppConfig
 
     // ===== 其他 =====
     public int FirstSyncDays { get; set; } = 365;
+    public int AutoSyncMinutes { get; set; } = 15; // 自动刷新周期（分钟）：Zoho 轮询模式下的间隔，默认 15
     public int MaxBodyChars { get; set; } = 6000;
     public int SyncConcurrency { get; set; } = 5; // 同步下载并发数（1~10，IMAP 与 Zoho REST 共用；过大可能被服务器限流/封禁）
     public bool EnableAutoSync { get; set; } = true; // 新邮件到达时自动收取（IMAP IDLE）

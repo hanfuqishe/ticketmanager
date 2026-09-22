@@ -18,7 +18,15 @@ public class ImapSyncService
 {
     private readonly AppConfig _config;
 
-    public ImapSyncService(AppConfig config) => _config = config;
+    /// <summary>关注客服邮箱快照：构造时拷贝一份。下载阶段是 N 路并发，而同步线程可能在回调里追加关注邮箱，
+    /// 直接枚举配置里的 List 会并发失败。</summary>
+    private readonly HashSet<string> _monitored;
+
+    public ImapSyncService(AppConfig config)
+    {
+        _config = config;
+        _monitored = new HashSet<string>(config.MonitoredAddresses, StringComparer.OrdinalIgnoreCase);
+    }
 
     /// <summary>测试 IMAP 连接：连接服务器→认证→打开收件箱。返回 (成功, 信息)。</summary>
     public async Task<(bool Ok, string Message)> TestConnectionAsync()
@@ -200,19 +208,21 @@ public class ImapSyncService
     }
 
     /// <summary>按 文件夹+UID+附件名 下载附件内容（重连邮箱取该邮件，按文件名匹配附件部分）。失败返回 null。</summary>
-    public byte[]? DownloadAttachment(string folderName, uint uid, string attachmentName)
+    public async Task<byte[]?> DownloadAttachmentAsync(
+        string folderName, uint uid, string attachmentName, CancellationToken ct = default)
     {
         var socketOptions = _config.ImapUseSsl ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.Auto;
         using var client = new ImapClient();
         client.ProxyClient = CreateProxy();
-        client.Connect(_config.ImapHost, _config.ImapPort, socketOptions);
-        client.Authenticate(_config.ImapUsername, _config.ImapPassword);
-        var folder = client.GetFolder(folderName);
-        folder.Open(FolderAccess.ReadOnly);
-        var msg = folder.GetMessage(new UniqueId(uid));
+        await client.ConnectAsync(_config.ImapHost, _config.ImapPort, socketOptions, ct);
+        await client.AuthenticateAsync(_config.ImapUsername, _config.ImapPassword, ct);
+        var folder = await client.GetFolderAsync(folderName, ct);
+        await folder.OpenAsync(FolderAccess.ReadOnly, ct);
+        var msg = await folder.GetMessageAsync(new UniqueId(uid), ct);
         foreach (var att in msg.Attachments)
         {
-            if (att is MimePart part && string.Equals(part.FileName, attachmentName, StringComparison.OrdinalIgnoreCase))
+            if (att is MimePart part && part.Content != null &&
+                string.Equals(part.FileName, attachmentName, StringComparison.OrdinalIgnoreCase))
             {
                 using var ms = new MemoryStream();
                 part.Content.DecodeTo(ms);
@@ -271,12 +281,11 @@ public class ImapSyncService
     /// <summary>任一关注客服邮箱出现在 收件人/抄送/发件人 中即纳入。</summary>
     private bool IsMonitored(EmailMessage e)
     {
-        if (_config.MonitoredAddresses.Count == 0) return true;
+        if (_monitored.Count == 0) return true;
         var participants = new List<string> { e.FromAddress };
         participants.AddRange(SplitList(e.ToAddresses));
         participants.AddRange(SplitList(e.CcAddresses));
-        return _config.MonitoredAddresses.Any(m =>
-            participants.Any(p => string.Equals(p, m, StringComparison.OrdinalIgnoreCase)));
+        return participants.Any(p => _monitored.Contains(p));
     }
 
     private static IEnumerable<string> SplitList(string s) =>
@@ -299,10 +308,11 @@ public class ImapSyncService
             for (int i = 0; i < imageCids.Count; i++)
             {
                 inlineFiles.Add(""); // 默认无图，找到则填充文件名
-                if (imageCids[i].Length == 0 || !byCid.TryGetValue(imageCids[i], out var part)) continue;
+                if (imageCids[i].Length == 0 || !byCid.TryGetValue(imageCids[i], out var part) || part.Content == null)
+                    continue;
                 using var ms = new MemoryStream();
                 part.Content.DecodeTo(ms);
-                var ext = ExtensionFor(part.ContentType.MimeType);
+                var ext = ExtensionFor(part.ContentType?.MimeType ?? "image/png");
                 inlineFiles[i] = $"img{i}{ext}";
                 inlineBytes.Add(ms.ToArray());
             }

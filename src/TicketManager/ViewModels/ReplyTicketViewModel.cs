@@ -23,7 +23,7 @@ public class ReplyTicketViewModel : ViewModelBase
 {
     private readonly WorkflowService _workflow;
 
-    public List<ReplyRecipient> Recipients { get; }
+    public ObservableCollection<ReplyRecipient> Recipients { get; } = new();
     public List<string> SignatureNames { get; }
 
     /// <summary>被回复邮件 收件/抄送 中自动抄送的相关方（除 发件人/本人），并入默认抄送展示。</summary>
@@ -105,6 +105,44 @@ public class ReplyTicketViewModel : ViewModelBase
             if (e.Length > 0) list.Add(e);
         }
         return string.Join(",", list.Distinct(StringComparer.OrdinalIgnoreCase));
+    }
+
+    /// <summary>把当前内容导出为草稿快照（“存草稿”用）。</summary>
+    public EmailDraft ToDraft() => new()
+    {
+        Kind = "reply",
+        Title = string.IsNullOrWhiteSpace(Subject) ? Body?.Trim() ?? "" : Subject,
+        To = RecipientEmail,
+        Cc = CcEmails,
+        ExtraCc = ExtraCcEmails ?? "",
+        Subject = Subject ?? "",
+        Body = Body ?? "",
+        Signature = Signature ?? "",
+        Attachments = Attachments.ToList()
+    };
+
+    /// <summary>载入草稿内容（标题/正文/签名/额外抄送/附件）；收件人按地址匹配候选，缺失时新增一个候选并选中。</summary>
+    public void LoadDraft(EmailDraft d)
+    {
+        if (!string.IsNullOrWhiteSpace(d.Subject)) Subject = d.Subject;
+        Body = d.Body ?? "";
+        if (!string.IsNullOrWhiteSpace(d.Signature)) Signature = d.Signature;
+        ExtraCcEmails = d.ExtraCc ?? "";
+        Attachments.Clear();
+        foreach (var a in d.Attachments.Where(a => !string.IsNullOrWhiteSpace(a))) Attachments.Add(a);
+        OnPropertyChanged(nameof(AttachmentSummary));
+        if (!string.IsNullOrWhiteSpace(d.To))
+        {
+            var toEmail = WorkflowService.ExtractEmail(d.To);
+            var match = Recipients.FirstOrDefault(r =>
+                string.Equals(WorkflowService.ExtractEmail(r.Email), toEmail, StringComparison.OrdinalIgnoreCase));
+            if (match == null)
+            {
+                match = new ReplyRecipient { Role = "收件人", Email = d.To };
+                Recipients.Add(match);
+            }
+            SelectedRecipient = match;
+        }
     }
 
     public string Body
@@ -196,7 +234,7 @@ public class ReplyTicketViewModel : ViewModelBase
         var supports = workflow.GetSupportRecipients();
         var support = supports.FirstOrDefault(s => string.Equals(s, email.FromAddress, StringComparison.OrdinalIgnoreCase))
                       ?? supports.FirstOrDefault() ?? "";
-        Recipients = new List<ReplyRecipient>();
+        Recipients.Clear();
         if (!string.IsNullOrEmpty(support))
             Recipients.Add(new ReplyRecipient { Role = "客服", Email = support });
         foreach (var c in workflow.GetCustomerContacts(email.Enterprise))
@@ -231,6 +269,12 @@ public class ReplyTicketViewModel : ViewModelBase
 
         SendCommand = new RelayCommand(async _ => await SendAsync(), _ => CanSend);
         TranslateCommand = new RelayCommand(async _ => await TranslateAsync(), _ => !IsTranslating && !IsSending);
+
+        // 状态一变就立即让“发送/翻译”按钮重查可用性。
+        // RelayCommand 的 CanExecuteChanged 挂的是 CommandManager.RequerySuggested，而它只在用户输入事件
+        // （鼠标/键盘）之后才重查：异步操作（翻译/发送）改完状态后按钮会保持旧状态——
+        // 表现为“翻译完发送键是灰的，点一下才变黑、再点才真发送”。
+        PropertyChanged += (_, _) => CommandManager.InvalidateRequerySuggested();
     }
 
     private static string BuildQuoteHeader(EmailMessage e)
@@ -296,6 +340,7 @@ public class ReplyTicketViewModel : ViewModelBase
             {
                 var tb = await ai.TranslateToEnglishAsync(Body);
                 if (!string.IsNullOrWhiteSpace(tb)) Body = tb;
+                else { StatusText = $"翻译失败：{ai.LastError ?? "未知错误"}"; return; }
             }
             if (SubjectParser.ContainsCjk(Subject))
             {

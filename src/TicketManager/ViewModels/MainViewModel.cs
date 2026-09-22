@@ -15,6 +15,9 @@ public enum TreeSortMode { Time, Product, Customer }
 
 public record SortOption(string Label, TreeSortMode Mode);
 
+/// <summary>运行日志条目：状态栏（窗口最下行）显示过的消息 + 时间戳，供“运行日志”窗口回看。</summary>
+public record LogEntry(string Time, string Message);
+
 public class MainViewModel : ViewModelBase
 {
     private readonly WorkflowService _workflow;
@@ -120,7 +123,34 @@ public class MainViewModel : ViewModelBase
     public string ProgressPercentText => ProgressIndeterminate ? "" : $"{Math.Round(ProgressValue)}%";
 
     private string _statusText = "就绪";
-    public string StatusText { get => _statusText; set => Set(ref _statusText, value); }
+    public string StatusText
+    {
+        get => _statusText;
+        set { if (Set(ref _statusText, value)) AppendLog(value); }
+    }
+
+    /// <summary>运行日志上限：长期运行时丢弃最旧条目，避免内存无限增长。</summary>
+    private const int MaxLogEntries = 20000;
+
+    /// <summary>状态栏消息的完整历史（供“运行日志”窗口查看；默认窗口不显示）。</summary>
+    public ObservableCollection<LogEntry> Logs { get; } = new();
+
+    /// <summary>把状态栏消息追加到运行日志（非 UI 线程时切到 UI 线程再追加）。</summary>
+    private void AppendLog(string message)
+    {
+        if (string.IsNullOrEmpty(message)) return;
+        void Add()
+        {
+            Logs.Add(new LogEntry(DateTime.Now.ToString("HH:mm:ss"), message));
+            while (Logs.Count > MaxLogEntries) Logs.RemoveAt(0);
+        }
+        var app = Application.Current;
+        if (app == null || app.Dispatcher.CheckAccess()) Add();
+        else app.Dispatcher.BeginInvoke(new Action(Add));
+    }
+
+    /// <summary>清空运行日志（日志窗口“清空”按钮）。</summary>
+    public void ClearLogs() => Logs.Clear();
 
     private string _searchText = "";
     /// <summary>检索关键字：只匹配线索根邮件的主题（原主题与 AI 翻译），变化时即时过滤重建树。</summary>
@@ -268,16 +298,34 @@ public class MainViewModel : ViewModelBase
     public string EmailFontFamily => _workflow.Config.EmailFontFamily;
     public double EmailFontSize => _workflow.Config.EmailFontSize;
     public string EmailFontColor => _workflow.Config.EmailFontColor;
+    /// <summary>正文颜色画刷缓存：解析只做一次（原先每次取属性都重新解析，配置非法时还会反复抛异常）。</summary>
+    private Brush? _fontColorBrush;
+
     public Brush EmailFontColorBrush
     {
         get
         {
+            if (_fontColorBrush != null) return _fontColorBrush;
             try
             {
-                return new SolidColorBrush((Color)ColorConverter.ConvertFromString(_workflow.Config.EmailFontColor));
+                var brush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(_workflow.Config.EmailFontColor));
+                brush.Freeze(); // 冻结后跨线程可用，渲染更快
+                _fontColorBrush = brush;
             }
-            catch { return Brushes.Black; }
+            catch (Exception ex)
+            {
+                App.Log("EmailFontColor", ex); // 配置里的颜色字符串非法：回退黑色并留痕
+                _fontColorBrush = Brushes.Black;
+            }
+            return _fontColorBrush;
         }
+    }
+
+    /// <summary>配置变更后丢弃画刷缓存，下次取用时按新颜色重建。</summary>
+    public void InvalidateFontColorBrush()
+    {
+        _fontColorBrush = null;
+        OnPropertyChanged(nameof(EmailFontColorBrush));
     }
 
     /// <summary>已尝试过“回填正文内嵌图片”的邮件 Id（避免每次选中都重复调 Zoho API）。</summary>
@@ -297,7 +345,7 @@ public class MainViewModel : ViewModelBase
     /// <summary>后台回填选中邮件的内嵌图片；成功后更新内存正文并刷新显示（图片在正文对应位置出现）。</summary>
     private async Task BackfillInlineImagesAsync(long emailId)
     {
-        var r = await Task.Run(() => _workflow.EnsureInlineImages(emailId));
+        var r = await _workflow.EnsureInlineImagesAsync(emailId);
         if (r.NewBody == null) return;
         if (SelectedEmail?.Email.Id != emailId) return; // 用户已切换邮件
         SelectedEmail.Email.BodyText = r.NewBody;
@@ -338,7 +386,7 @@ public class MainViewModel : ViewModelBase
     /// <summary>后台回填选中邮件的附件元数据；完成后若用户仍停留该邮件则刷新附件区显示。</summary>
     private async Task EnsureAttachmentsAsync(long emailId)
     {
-        var atts = await Task.Run(() => _workflow.EnsureAttachments(emailId));
+        var atts = await _workflow.EnsureAttachmentsAsync(emailId);
         if (atts == null)
         {
             // 回填失败（如 Zoho 限流/网络）：移除“已尝试”标记，允许下次选中时重试
@@ -445,7 +493,7 @@ public class MainViewModel : ViewModelBase
             var translated = await ai.TranslateTextAsync(body);
             if (string.IsNullOrWhiteSpace(translated))
             {
-                StatusText = "翻译失败（DeepSeek 调用出错）";
+                StatusText = $"AI 翻译失败：{ai.LastError ?? "未知错误"}";
                 return;
             }
             EmailTranslation = translated;
@@ -522,7 +570,7 @@ public class MainViewModel : ViewModelBase
         StatusText = $"正在下载附件：{name} …";
         try
         {
-            var path = await Task.Run(() => _workflow.DownloadAttachment(emailId, name));
+            var path = await _workflow.DownloadAttachmentAsync(emailId, name);
             if (string.IsNullOrEmpty(path))
             {
                 StatusText = $"附件下载失败：{name}";
@@ -559,7 +607,7 @@ public class MainViewModel : ViewModelBase
         StatusText = $"正在保存附件：{name} …";
         try
         {
-            var path = await Task.Run(() => _workflow.DownloadAttachment(emailId, name));
+            var path = await _workflow.DownloadAttachmentAsync(emailId, name);
             if (string.IsNullOrEmpty(path))
             {
                 StatusText = $"附件下载失败：{name}";
@@ -660,6 +708,12 @@ public class MainViewModel : ViewModelBase
             if (!string.IsNullOrEmpty(product)) t.Product = product;
             if (!string.IsNullOrEmpty(enterprise)) t.Enterprise = enterprise;
             node.RefreshThreadInfo();
+            // 同步写回 _threads：否则下次过滤/合并时，这条线索可能按旧分组被放回原位置
+            SyncMemoryThread(id, x =>
+            {
+                if (!string.IsNullOrEmpty(product)) x.Product = product;
+                if (!string.IsNullOrEmpty(enterprise)) x.Enterprise = enterprise;
+            });
 
             // 3) 定位/创建新分组并插入
             var custName = string.IsNullOrEmpty(t.Enterprise) ? "未分类客户" : t.Enterprise;
@@ -817,12 +871,18 @@ public class MainViewModel : ViewModelBase
     /// <summary>
     /// 启动后：延迟片刻再自动同步一次（给用户留出"清空本地数据"的时间），
     /// 随后进入自动收取新邮件模式（若已启用）。延迟期间点清空会取消本次自动同步。
+    /// 方法本身不 async：内部用“启动即忘”的任务，且任务里的异常都有捕获留痕
+    /// （避免 async void 的异常直接抛到全局未处理异常）。
     /// </summary>
-    public async void AutoSyncAndListen()
+    public void StartAutoSyncAndListen()
     {
         var cts = new CancellationTokenSource();
         _autoSyncCts = cts;
-        var ct = cts.Token;
+        _ = AutoSyncAndListenAsync(cts.Token);
+    }
+
+    private async Task AutoSyncAndListenAsync(CancellationToken ct)
+    {
         try
         {
             // 首次自动同步延迟 10 秒：此时若用户点击"清空本地数据"，
@@ -836,7 +896,14 @@ public class MainViewModel : ViewModelBase
             if (ct.IsCancellationRequested) return;
             StartAutoSync();
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException)
+        {
+            // 用户停止同步 / 退出应用：正常结束，无需留痕
+        }
+        catch (Exception ex)
+        {
+            App.Log("AutoSyncAndListen", ex);
+        }
     }
 
     /// <summary>仅判断所选同步方式（Zoho REST 或 IMAP）的配置是否齐全，不弹窗（供后台自动同步静默判断）。</summary>
@@ -907,6 +974,13 @@ public class MainViewModel : ViewModelBase
                     root.RefreshThreadInfo();
                     break;
                 }
+        // 同步写回 _threads：否则下面的 ApplyFilterInPlace/MergeThreads 会拿旧状态把这条线索又插回树里
+        SyncMemoryThread(rootEmailId, t =>
+        {
+            t.Status = status;
+            t.StatusSummary = "";
+            t.StatusReason = reason;
+        });
         // “仅显示打开工单”开启时，线索被标记为已结束且已无新邮件 → 就地隐藏（淡出）；
         // 若它仍含未读新邮件（刚关闭后又来回复/通知）则保留显示，直到新邮件被看完
         if (targetRoot != null && _openOnly && IsThreadClosed(targetRoot.ThreadOwner.Thread)
@@ -960,6 +1034,12 @@ public class MainViewModel : ViewModelBase
                     root.RefreshThreadInfo();
                     break;
                 }
+        SyncMemoryThread(rootEmailId, t =>
+        {
+            t.Status = r.Value.Status;
+            t.StatusSummary = r.Value.Summary;
+            t.StatusReason = "";
+        });
         if (SelectedThread != null && SelectedThread.Thread.Id == updatedThreadId)
         {
             OnPropertyChanged(nameof(SelectedThreadHeader));
@@ -1054,13 +1134,14 @@ public class MainViewModel : ViewModelBase
             OnPropertyChanged(nameof(EmailFontFamily));
             OnPropertyChanged(nameof(EmailFontSize));
             OnPropertyChanged(nameof(EmailFontColor));
-            OnPropertyChanged(nameof(EmailFontColorBrush));
+            InvalidateFontColorBrush();
             OnPropertyChanged(nameof(EmailBodyDisplay)); // 触发正文重渲染（颜色更新）
         }
     }
 
     private void OpenSettings()
-    {        var oldMonitored = _workflow.Config.MonitoredAddresses.ToList();
+    {
+        var oldMonitored = _workflow.MonitoredAddresses.ToList();
         var win = new Views.SettingsWindow(_workflow);
         // 仅当主窗口已显示才设为 Owner：主窗口未显示/隐藏到托盘时（如启动早期、窗口关闭到托盘），
         // 给未显示的 Window 设 Owner 会抛 InvalidOperationException，导致设置窗口打不开
@@ -1072,13 +1153,13 @@ public class MainViewModel : ViewModelBase
             Load();
             StartAutoSync();
             // 关注客服邮箱发生变化（新增/删除）→ 立即重新同步，拉取新关注邮箱相关的邮件
-            var newMonitored = _workflow.Config.MonitoredAddresses;
+            var newMonitored = _workflow.MonitoredAddresses;
             if (!SameAddressSet(oldMonitored, newMonitored))
                 _ = SyncAsync();
         }
     }
 
-    private static bool SameAddressSet(List<string> a, List<string> b)
+    private static bool SameAddressSet(IReadOnlyCollection<string> a, IReadOnlyCollection<string> b)
     {
         var sa = new HashSet<string>(a, StringComparer.OrdinalIgnoreCase);
         var sb = new HashSet<string>(b, StringComparer.OrdinalIgnoreCase);
@@ -1120,23 +1201,60 @@ public class MainViewModel : ViewModelBase
 
     public void SelectThread(ThreadViewModel tv)
     {
+        CancelPendingMarkSeen(); // 离开邮件（改选线索/分组）→ 刚才那封不便置为已读
         SelectedThread = tv;
         SelectedEmail = null;
     }
 
+    /// <summary>置为已读的延迟时长：给用户 1 秒停留时间，避免用方向键/快速翻看时“划过即已读”。</summary>
+    private static readonly TimeSpan MarkSeenDelay = TimeSpan.FromSeconds(1);
+
+    /// <summary>延迟置为已读的“代”：每次选中自增，只有最后一次选中的延迟会真正执行。</summary>
+    private int _markSeenGeneration;
+
+    /// <summary>
+    /// 选中一封邮件。若是新邮件，<b>延迟 1 秒</b>再置为已读；期间选中了别的邮件/线索则取消（保持未读）。
+    /// </summary>
     public void SelectEmail(EmailNodeViewModel ev)
     {
-        // 点击/选中新邮件 → 清除该邮件的新标记（查看即已读），并刷新整条线索的加粗状态
-        if (ev.IsNew)
-        {
-            _workflow.MarkEmailSeen(ev.Email.Id);
-            ev.Email.IsNew = false;
-            foreach (var root in ev.ThreadOwner.Children)
-                root.RefreshNewState();
-            AfterEmailsSeen(ev.ThreadOwner.Thread); // 已结束线索看完新邮件后自动回隐；并刷新托盘角标
-        }
         SelectedEmail = ev;
         SelectedThread = ev.ThreadOwner;
+        ScheduleMarkSeen(ev);
+    }
+
+    private void ScheduleMarkSeen(EmailNodeViewModel ev)
+    {
+        var generation = ++_markSeenGeneration;
+        if (!ev.IsNew) return;
+        _ = MarkSeenAfterDelayAsync(ev, generation);
+    }
+
+    /// <summary>取消尚未到期的“置为已读”（靠代号失效，不持 CTS，避开取消源的释放时序问题）。</summary>
+    private void CancelPendingMarkSeen() => _markSeenGeneration++;
+
+    private async Task MarkSeenAfterDelayAsync(EmailNodeViewModel ev, int generation)
+    {
+        try
+        {
+            await Task.Delay(MarkSeenDelay); // 默认回到 UI 线程继续（下面要改绑定集合/属性）
+            if (generation != _markSeenGeneration) return; // 期间又选中了别的邮件/线索 → 这封保持未读
+            MarkEmailRead(ev);
+        }
+        catch (Exception ex)
+        {
+            App.Log("MarkSeen", ex);
+        }
+    }
+
+    /// <summary>把一封新邮件真正置为已读：落库 + 清内存新标记 + 刷新整条线索的加粗 + 已结束线索回隐 + 托盘角标。</summary>
+    private void MarkEmailRead(EmailNodeViewModel ev)
+    {
+        if (!ev.IsNew) return;
+        _workflow.MarkEmailSeen(ev.Email.Id);
+        ev.Email.IsNew = false;
+        foreach (var root in ev.ThreadOwner.Children)
+            root.RefreshNewState();
+        AfterEmailsSeen(ev.ThreadOwner.Thread);
     }
 
     /// <summary>把指定线索内的所有新同步邮件标记为已读（右键“全部已读”），并就地刷新加粗状态。</summary>
@@ -1310,7 +1428,7 @@ public class MainViewModel : ViewModelBase
     private void BuildTree(List<TicketThread> threads, TreeSortMode mode)
     {
         var list = new List<CustomerGroupViewModel>();
-        var supportAddresses = _workflow.Config.MonitoredAddresses;
+        var supportAddresses = _workflow.MonitoredAddresses;
         var selfAddress = _workflow.Config.ImapUsername;
         var customerGroups = threads
             .Where(MatchesFilter)
@@ -1386,7 +1504,7 @@ public class MainViewModel : ViewModelBase
         var ignored = _workflow.LoadIgnoredEmails();
         if (ignored.Count == 0) return;
 
-        var support = _workflow.Config.MonitoredAddresses;
+        var support = _workflow.MonitoredAddresses;
         var self = _workflow.Config.ImapUsername;
         var group = new IgnoredGroupViewModel { ExpandedByDefault = true };
         foreach (var email in ignored)
@@ -1434,7 +1552,7 @@ public class MainViewModel : ViewModelBase
     /// </summary>
     public void MergeThreads(List<TicketThread> newThreads)
     {
-        var support = _workflow.Config.MonitoredAddresses;
+        var support = _workflow.MonitoredAddresses;
         var self = _workflow.Config.ImapUsername;
 
         // 合并/排序可能替换或移动选中节点：用稳定标识（邮件 Id / 线索根邮件 Id）保存选中，合并后恢复
@@ -1446,13 +1564,22 @@ public class MainViewModel : ViewModelBase
             if (GetRootEmail(t) is { } r) newRootIds.Add(r.Id);
 
         // 1. 移除已消失或不再匹配过滤的线索（并清理空分组）；
-        //    “仅新邮件/仅星标/检索关键字”模式下同时隐藏已不满足条件的线索
+        //    “仅新邮件/仅星标/检索关键字”模式下同时隐藏已不满足条件的线索。
+        //    因过滤而移除的线索按根邮件 Id 记下，本次合并不再插回：树里对象的状态比 newThreads
+        //    （同步时加载的库快照）新，否则会出现“收起动画播完，线索又带着旧状态冒出来”。
+        var removedByFilter = new HashSet<long>();
         foreach (var cust in Customers.ToList())
             foreach (var prod in cust.Products.ToList())
                 foreach (var root in prod.Threads.ToList())
-                    if (!newRootIds.Contains(root.Email.Id) ||
-                        !MatchesFilter(root.ThreadOwner.Thread))
+                {
+                    if (!newRootIds.Contains(root.Email.Id))
                         prod.Threads.Remove(root);
+                    else if (!MatchesFilter(root.ThreadOwner.Thread))
+                    {
+                        prod.Threads.Remove(root);
+                        removedByFilter.Add(root.Email.Id);
+                    }
+                }
         foreach (var cust in Customers.ToList())
             foreach (var prod in cust.Products.ToList())
                 if (prod.Threads.Count == 0) cust.Products.Remove(prod);
@@ -1462,9 +1589,10 @@ public class MainViewModel : ViewModelBase
         // 2. 插入新线索 / 更新已有线索（只处理匹配当前全部过滤的线索）
         foreach (var t in newThreads)
         {
-            if (!MatchesFilter(t)) continue;
             var rootEmail = GetRootEmail(t);
             if (rootEmail == null) continue;
+            if (removedByFilter.Contains(rootEmail.Id)) continue; // 本次刚被过滤移除 → 不复活
+            if (!MatchesFilter(t)) continue;
             var existing = FindRootNode(rootEmail.Id);
             if (existing == null)
                 InsertNewThread(t, support, self);
@@ -1497,6 +1625,9 @@ public class MainViewModel : ViewModelBase
         }
     }
 
+    /// <summary>按邮件 Id 在树中查找节点（供主窗口“展开线索后自动选中第 1 封新邮件”等使用）。</summary>
+    public EmailNodeViewModel? FindEmailNode(long emailId) => FindEmailNodeById(emailId);
+
     /// <summary>在整棵树中按邮件 Id 查找节点（含非根邮件；含“已忽略的邮件”大类中的被忽略邮件）。</summary>
     private EmailNodeViewModel? FindEmailNodeById(long emailId)
     {
@@ -1524,6 +1655,21 @@ public class MainViewModel : ViewModelBase
     {
         if (t.DisplayRoots.Count > 0) return t.DisplayRoots[0].Email;
         return t.Emails.OrderBy(e => e.DateSent).FirstOrDefault();
+    }
+
+    /// <summary>
+    /// 界面上改了某条线索的状态/产品/客户之后，把 <see cref="_threads"/> 里同一线索（按根邮件 Id 匹配）的对象一起改掉。
+    /// 合并（MergeThreads）与过滤切换都拿 _threads 当“目标线程表”：若不一起改，已经按新状态隐藏的线索
+    /// 会在下一次合并时按 _threads 里的旧值重新插入（表现为“关闭并消失后又自己冒出来、状态还是旧的”）。
+    /// </summary>
+    private void SyncMemoryThread(long rootEmailId, Action<TicketThread> apply)
+    {
+        if (_threads == null) return;
+        foreach (var t in _threads)
+        {
+            var root = GetRootEmail(t);
+            if (root != null && root.Id == rootEmailId) apply(t);
+        }
     }
 
     /// <summary>在现有树中按根邮件 Id 查找线索根节点。</summary>

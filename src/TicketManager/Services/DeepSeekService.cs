@@ -24,13 +24,25 @@ public class DeepSeekService : IDisposable
     private readonly HttpClient _http;
     private readonly SemaphoreSlim _gate = new(4, 4); // AI 并发上限（标题/状态/元数据分析并行用；太高易触发 DeepSeek 限流）
 
+    /// <summary>关注客服邮箱快照：构造时拷贝一份，避免同步线程正并发修改配置里的列表（枚举中变→抛异常）。</summary>
+    private readonly HashSet<string> _monitored;
+
     public DeepSeekService(AppConfig config)
     {
         _config = config;
+        _monitored = new HashSet<string>(config.MonitoredAddresses, StringComparer.OrdinalIgnoreCase);
         var handler = new HttpClientHandler();
         if (config.UseProxy && config.ProxyForDeepSeek && !string.IsNullOrEmpty(config.ProxyHost))
         {
-            handler.Proxy = new WebProxy($"{config.ProxyHost}:{config.ProxyPort}");
+            // 代理地址必须带协议 scheme：WebProxy("host:port") 会被当成 HTTP 代理（.NET 8 实测解析出 scheme=http），
+            // 配置 Socks5/Socks4 时不带 scheme 就会用错协议，导致 AI 接口连不上。
+            var scheme = config.ProxyType switch
+            {
+                "Socks4" => "socks4",
+                "Socks5" => "socks5",
+                _ => "http"
+            };
+            handler.Proxy = new WebProxy($"{scheme}://{config.ProxyHost}:{config.ProxyPort}");
             handler.UseProxy = true;
         }
         _http = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(5) };
@@ -39,6 +51,9 @@ public class DeepSeekService : IDisposable
     }
 
     public bool Configured => !string.IsNullOrEmpty(_config.DeepSeekApiKey);
+
+    /// <summary>最近一次调用失败的具体原因（供上层向用户提示）；成功时清空。</summary>
+    public string? LastError { get; private set; }
 
     /// <summary>为单封邮件生成一句话标题。失败返回 null。</summary>
     public async Task<string?> SummarizeTitleAsync(EmailMessage email)
@@ -161,7 +176,7 @@ public class DeepSeekService : IDisposable
         if (string.Equals(fromAddress, LogUploadNotifier, StringComparison.OrdinalIgnoreCase))
             return "[上传确认]";
         // 厂商客服邮箱（support@manageengine/zohocorp）即使未被关注也算客服，避免被误标为客户
-        if (_config.MonitoredAddresses.Any(m => string.Equals(fromAddress, m, StringComparison.OrdinalIgnoreCase)) ||
+        if (_monitored.Contains(fromAddress) ||
             IsSupportMailbox(fromAddress))
             return "[客服]";
         return "[客户]";
@@ -307,13 +322,16 @@ public class DeepSeekService : IDisposable
             if (doc.RootElement.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
             {
                 var content = choices[0].GetProperty("message").GetProperty("content").GetString();
+                LastError = null; // 成功：清空上次错误
                 return content?.Trim();
             }
+            LastError = "AI 响应格式异常（缺少 choices）";
             App.Log("DeepSeek.Chat", new Exception("响应缺少 choices，原始响应: " + (json.Length > 400 ? json[..400] : json)));
             return null;
         }
         catch (Exception ex)
         {
+            LastError = DescribeError(ex);
             App.Log("DeepSeek.Chat", ex); // 记录失败原因（网络/限流/超时等），便于排查
             return null; // 网络/限流/解析失败统一返回 null，由上层计数
         }
@@ -331,4 +349,17 @@ public class DeepSeekService : IDisposable
     }
 
     public void Dispose() => _http.Dispose();
+
+    /// <summary>把异常翻译成给用户看的简短原因（域名解析/网络、鉴权、限流、超时等）。</summary>
+    private static string DescribeError(Exception ex) => ex switch
+    {
+        HttpRequestException { InnerException: System.Net.Sockets.SocketException } =>
+            "无法连接 AI 服务（域名解析或网络不通）——请检查网络，或在“设置→网络代理”勾选“用于 AI 接口”",
+        HttpRequestException { StatusCode: System.Net.HttpStatusCode.Unauthorized } =>
+            "API Key 无效或未授权（401）",
+        HttpRequestException { StatusCode: System.Net.HttpStatusCode.TooManyRequests } =>
+            "请求过于频繁（429），请稍后再试",
+        TaskCanceledException => "请求超时（网络较慢或服务无响应）",
+        _ => ex.Message
+    };
 }

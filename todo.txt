@@ -12,8 +12,64 @@
 - ✅ 产品简称可配置：设置→产品简称 新增“简称→全称”映射（内置 EC/OPM + 自定义，启动/保存时注入
     SubjectParser.SetAliases，主题解析即用）；AppConfig.ProductAliases 持久化。
 - ✅ 空关注列表提示：设置→关注的客服邮箱 列表为空时黄底警示“将采集全部邮件”，增删后即时刷新。
+- ✅ 日志轮转 + 同源异常限流：error.log 超 5MB 轮转（保留 error.log/.1/.2），同源同异常 30 秒内只落盘一条
+    （此前 Dispatcher 异常风暴一天写 13 万条、日志涨到 744MB）；启动时把超大日志归档为 error.old.log。
+- ✅ 并发安全：关注客服邮箱改为「锁内写入 + 快照读取」（AutoTrackOne 原先在 N 路并发下载回调里直接
+    List.Add/HashSet.Add，会损坏集合）；DeepSeekService/ImapSyncService 用构造时快照。
+- ✅ AI 代理修正：DeepSeek 的 WebProxy 原先不带 scheme（被当成 HTTP 代理），现按 ProxyType 生成
+    socks4:// / socks5:// / http:// 地址。
+- ✅ ThreadBuilder 后代工单号继承由 O(N²) 改为 O(N)（先建父子索引再后序遍历整片森林）；
+    已用新旧实现对照实测：162 条线索、逐封工单号归属完全一致。
+- ✅ 附件/内嵌图片按需回填改真异步：去掉全部 11 处 GetAwaiter().GetResult()，MainWindow 不再用 Task.Run
+    包同步调用；Zoho 客户端复用单例（access token 不再每次重换）。
+- ✅ 单封邮件查询：新增 DatabaseService.GetEmailById（原先为找一封邮件 LoadAllEmails 拉整表）。
+- ✅ 数据库写入优化：SaveConfig 40+ 次 SetSetting → 一次 SetSettings（单连接单事务）；
+    PersistThreads 去 N+1（线程→根邮件一次性查出）；ClearFirstEmailTitles 加 AiTitle<>'' 条件不再空写。
+- ✅ 补建表列：Starred/MetaAnalyzed 写进 CREATE TABLE（此前只靠迁移 ALTER 补，schema 与迁移易漂移）。
+- ✅ Zoho 失败原因可见：新增 LastError（HTTP 状态码 + 响应片段 / OAuth error），
+    不再“失败即 null”分不清 401 限流还是网络问题。
+- ✅ 空 catch 全部补留痕（Zoho 上传/取时区/发送解析、剪贴板贴图、下载附件、字体颜色解析、AI 建议企业名）；
+    MainWindow 的 5 个 async void 事件处理器统一走 RunUiHandlerAsync（异常写日志 + 状态栏提示）。
+- ✅ 编译告警清零：修 ImapSyncService 两处 CS8602（MimePart.Content/ContentType 可空）、
+    MainWindow CS4014（BeginInvoke 未等待改为显式丢弃）。
+- ✅ 导出逻辑抽到 Services/ExportService.cs（CSV/Excel 共用表头与行取值），主窗口相应瘦身。
+
+### 交互/视觉修复（本轮）
+- ✅ 取消工单后列表不再“复活”：MergeThreads 记录 removedByFilter（过滤隐藏的线索不再被 _threads 旧数据补回）。
+- ✅ 选中新邮件后延迟 1 秒才置为已读（快速划过不误标）；展开线索自动选中其中第一封新邮件（点三角与双击都生效）。
+- ✅ 线索首封邮件加星：实心/空心星尺寸一致（此前实心 12×12、空心 14×14 视觉不等大）。
+- ✅ 回复窗口“翻译为英文”后发送键即时可用（ViewModel 变更触发 CommandManager.InvalidateRequerySuggested）。
+- ✅ 列表行不再有鼠标悬浮高亮（原来悬浮整行底色变 #F2F2F2，会盖掉根邮件的浅蓝底）：删掉模板里那个
+    `IsMouseOver → RowBg.Background` 触发器。选中（#D6E8F7 + 左侧蓝条）、根邮件（#EAF3FD）、多选（#B3D4FC）都保留。
+- ✅ 树顶部“钉住上层各级”浮层：客户/产品/线索钉在树顶，只让邮件滚出去；某级内容滚完后该级在自己槽位里
+    向上卷出（被槽位裁掉），且自内向外串行——三级→二级→一级依次卷出。定位公式抽到 Services/StickyLayout.cs，
+    用 tools/StickyProbe 做确定性验证。钉住行的不透明底色抽成 `StickyRowBackground`（浅灰 `#F0F0F0`，比内容区 `#FAFAFA` 略深；
+    想更明显就改这一个常量）。
+- ✅ 钉住时机按层判据：每级“表头顶端越过自己的槽位（上面各级高度之和，严格小于）”的瞬间才钉住——
+    还没被遮住时不钉（否则窗口刚打开、offset=0 时最上面两行的顶端正好等于槽位，会被重叠副本盖住，
+    点不动、左侧展开箭头也没了）；被遮住后立刻整行钉住，不再要等滚到视口顶部之上。
+- ✅ 滚动按整行对齐：滚轮改为接管处理（`TreeView.PreviewMouseWheel`），以“钉住区下沿”为基准取相邻那一行的顶端，
+    一格滚轮 = 精确一整行，滚完就已对齐（不再“先滚 48px 再吸附回来”，那种先冲后回看着就是闪烁）；
+    钉住区下面露出的都是整行，凑不满一屏时空缺的那一行永远留在窗口最下面。
+- ✅ 钉住副本可交互：副本挂永远收起的占位子项让左侧展开箭头出现；`IsExpanded` 双向绑到 **VM**（不能绑容器：
+    虚拟化回收容器会把绑定串到别的级别，表现为“点产品行却收起企业行”），再按 VM 同步到真实行。
+- ✅ 收起钉住的行后：**当场**（`Collapsed` 事件里，收起那一帧）把它滚回“钉住区下沿”——
+    偏移 = 该行内容坐标 − 它上面各级行高之和。拖到下一次浮层重算就晚了：那时树已重排、滚动位置还被钳到新底部，
+    结果就是“先收起、过几百毫秒画面整块跳一下”，看着就是闪。`Collapsed` 会沿树上冒、每级容器都被叫到，用 `e.Handled` 只处理一遍。
+    判据必须收紧：要有**可见的钉住副本** + 表头确实压在钉住区里（虚拟化回收容器也会报 Collapsed，
+    误判会导致“随便点一下钉住行就飞出去”）。
+- ✅ 收起/展开引起闪烁的另外两处根因：
+    ① 槽位临界带“脱钉→再钉”来回翻 → 浮层整块隐藏/重建：凡**上一帧就钉在这一级**的行，顶端落在自己槽位 ±0.5px 内就继续钉着它
+       （它就在原位，副本与真行重合，看不出差别；只在临界带生效，不与“取同级最后一个越过槽位的行”冲突）；
+    ② 链变化时 `Children.Clear()` + 全量重插（同样有一帧空白）→ 改为只重建变化的那一段，前缀相同的副本元素连动都不动。
+    另：行高不要读 `Slot.Height`（初值 NaN 时 `Math.Abs(NaN-h) > 0.1` 恒为 false，永远写不进去），存一份实测行高缓存 `_stickyHeights`。
+- ✅ 浮层性能与正确性：CollectRows 跳过被虚拟化回收的隐藏容器（其坐标是残留值，会把“边界行”算错导致上层过早滑出）；
+    行收集只走到视口顶部以下 400px；LayoutUpdated 频繁触发改为 40ms 节流。
 
 ## 待办 / 可继续优化
-1. 巨型类拆分：WorkflowService/MainViewModel/MainWindow.xaml.cs 行数过大，
-   → 按 同步 / 发信 / 联系人 / 导出 拆成独立服务，UI 业务逻辑逐步下沉 VM。
-2. 大量 UI 事件为 async void + 空 catch（MainWindow.xaml.cs）——逐步改为可等待、可留痕。
+1. 巨型类继续拆分：WorkflowService（~1500 行）/MainViewModel（~1700 行）仍偏大，
+   → 继续按 同步 / 发信 / 联系人 拆成独立服务，UI 业务逻辑逐步下沉 VM。
+2. 按需查询仍偏“全表”：GetCustomerContacts/GetColleagueContacts/GetKnownProducts 每次全量
+   LoadEmailsMeta 后在内存筛选，可下沉为 SQL（DISTINCT / LIKE 过滤）。
+3. MainViewModel 里 SyncAsync 的“同步开始/完成/finally”属于人工埋点日志，量大时可降级为调试开关。
+

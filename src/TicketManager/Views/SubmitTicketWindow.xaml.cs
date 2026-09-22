@@ -23,6 +23,30 @@ public partial class SubmitTicketWindow : Window
             Owner = owner;
     }
 
+    /// <summary>存草稿：把当前内容保存到本机草稿文件。</summary>
+    private void SaveDraft_Click(object sender, RoutedEventArgs e)
+    {
+        var d = _vm.ToDraft();
+        if (string.IsNullOrWhiteSpace(d.Body) && string.IsNullOrWhiteSpace(d.Fault))
+        {
+            _vm.StatusText = "内容为空，未保存草稿";
+            return;
+        }
+        Services.DraftService.Save(d);
+        _vm.StatusText = $"已保存草稿（{d.SavedAt}），可从“草稿…”载入";
+    }
+
+    /// <summary>打开草稿列表并载入所选草稿。</summary>
+    private void OpenDrafts_Click(object sender, RoutedEventArgs e)
+    {
+        var win = new DraftListWindow("submit") { Owner = this };
+        if (win.ShowDialog() == true && win.SelectedDraft is Models.EmailDraft d)
+        {
+            _vm.LoadDraft(d);
+            _vm.StatusText = $"已载入草稿（{d.SavedAt}）";
+        }
+    }
+
     /// <summary>客户下拉失焦：刷新该客户的接口人列表。</summary>
     private void CustomerBox_LostFocus(object sender, RoutedEventArgs e)
     {
@@ -124,7 +148,10 @@ public partial class SubmitTicketWindow : Window
                 return path;
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            App.Log("PasteImage", ex); // 剪贴板图片落盘失败：回退为不插入图片，但留痕便于排查
+        }
         return null;
     }
 }

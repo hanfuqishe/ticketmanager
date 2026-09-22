@@ -11,7 +11,11 @@
     <DockPanel Margin="14">
         <DockPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                <Button Content="发送" Width="90" Padding="8,4" Command="{Binding SendCommand}" IsDefault="True"/>
+                <Button Content="存草稿" Width="80" Padding="8,4" Click="SaveDraft_Click"
+                        ToolTip="把当前内容保存为本机草稿（可稍后从“草稿…”载入继续编辑）"/>
+                <Button Content="草稿…" Width="80" Padding="8,4" Margin="6,0,0,0" Click="OpenDrafts_Click"
+                        ToolTip="载入本机保存的草稿"/>
+                <Button Content="发送" Width="90" Padding="8,4" Margin="10,0,0,0" Command="{Binding SendCommand}" IsDefault="True"/>
                 <Button Content="取消" Width="90" Padding="8,4" Margin="10,0,0,0" IsCancel="True"/>
             </StackPanel>
             <TextBlock Text="{Binding StatusText}" VerticalAlignment="Center" Foreground="#C62828"

@@ -15,6 +15,40 @@ public class WorkflowService
     private readonly SemaphoreSlim _syncLock = new(1, 1); // 串行化同步，避免手动与自动同步并发
     private readonly SemaphoreSlim _rebuildLock = new(1, 1); // 串行化线程重建（DB 写），避免后台同步与手工设置/清空等并发覆盖
 
+    /// <summary>
+    /// 关注客服邮箱快照（不区分大小写）。同步阶段会 N 路并发地读它（判断某封邮件是否关注），
+    /// 而“自动发现客服邮箱”又会在并发回调里追加——直接读/写 _config.MonitoredAddresses（List）会踩
+    /// 并发枚举异常与内部数组损坏。因此：写入一律在 _monitoredLock 内完成，并整体替换本引用；读取只用本快照。
+    /// </summary>
+    private volatile HashSet<string> _monitored = new(StringComparer.OrdinalIgnoreCase);
+    private volatile string[] _monitoredList = Array.Empty<string>();
+    private readonly object _monitoredLock = new();
+
+    /// <summary>当前关注的客服邮箱（只读快照，可安全并发枚举）。</summary>
+    public IReadOnlyList<string> MonitoredAddresses => _monitoredList;
+
+    /// <summary>某地址是否在关注列表中。</summary>
+    private bool IsMonitoredAddress(string addr) => _monitored.Contains(addr.Trim());
+
+    /// <summary>按 _config 重建关注邮箱快照（配置加载/保存、自动发现新邮箱后调用）。</summary>
+    private void RefreshMonitoredSnapshot()
+    {
+        lock (_monitoredLock)
+        {
+            var list = _config.MonitoredAddresses
+                .Where(a => !string.IsNullOrWhiteSpace(a))
+                .Select(a => a.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            _monitoredList = list;
+            _monitored = new HashSet<string>(list, StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    /// <summary>复用的 Zoho REST 客户端：access token 缓存在实例字段里，复用可避免每次下载附件/回填元数据都重新换 token、重建连接。</summary>
+    private ZohoMailApiService? _zohoApi;
+    private ZohoMailApiService ZohoApi() => _zohoApi ??= new ZohoMailApiService(_config);
+
     public WorkflowService(DatabaseService db) => _db = db;
 
     public AppConfig Config => _config;
@@ -80,6 +114,8 @@ public class WorkflowService
             AutoTrackSupportMailboxes = BoolOr(_db.GetSetting("auto_track_support"), true)
         };
         SubjectParser.SetAliases(_config.ProductAliases); // 把自定义产品简称注入解析器（内置 EC/OPM + 自定义）
+        RefreshMonitoredSnapshot(); // 重建关注邮箱快照（并发读安全）
+        _zohoApi = null;            // 配置可能已变（代理/账号/token）→ 丢弃旧客户端，下次调用按新配置重建
         return _config;
     }
 
@@ -92,62 +128,60 @@ public class WorkflowService
         var oldFirstSyncDays = IntOr(_db.GetSetting("first_sync_days"), 365);
         // 并发数强制限制在 1~10（过大可能触发邮箱服务器限流/封禁）
         c.SyncConcurrency = Math.Clamp(c.SyncConcurrency, 1, 10);
-        _db.SetSetting("imap_host", c.ImapHost);
-        _db.SetSetting("imap_port", c.ImapPort.ToString());
-        _db.SetSetting("imap_ssl", c.ImapUseSsl.ToString());
-        _db.SetSetting("imap_username", c.ImapUsername);
-        _db.SetSetting("imap_password", CredentialService.Protect(c.ImapPassword));
-        _db.SetSetting("imap_folder", c.ImapFolder);
-        _db.SetSetting("imap_sent_folder", c.ImapSentFolder);
-
-        _db.SetSetting("smtp_host", c.SmtpHost);
-        _db.SetSetting("smtp_port", c.SmtpPort.ToString());
-        _db.SetSetting("smtp_ssl", c.SmtpUseSsl.ToString());
-        _db.SetSetting("smtp_username", c.SmtpUsername);
-        _db.SetSetting("smtp_password", CredentialService.Protect(c.SmtpPassword));
-
-        _db.SetSetting("monitored_addresses", string.Join(";", c.MonitoredAddresses));
-        _db.SetSetting("my_support_domains", string.Join(";", c.MySupportDomains));
-        _db.SetSetting("domain_mappings", JsonSerializer.Serialize(c.DomainEnterpriseMappings));
-        _db.SetSetting("product_aliases", JsonSerializer.Serialize(c.ProductAliases));
-
-        _db.SetSetting("deepseek_key", CredentialService.Protect(c.DeepSeekApiKey));
-        _db.SetSetting("deepseek_baseurl", c.DeepSeekBaseUrl);
-        _db.SetSetting("deepseek_model", c.DeepSeekModel);
-        _db.SetSetting("ai_provider", c.AiProvider);
-        _db.SetSetting("ai_title", c.EnableAiTitle.ToString());
-        _db.SetSetting("ai_status", c.EnableAiStatus.ToString());
-        _db.SetSetting("ai_meta", c.EnableAiMeta.ToString());
-
-        _db.SetSetting("proxy_use", c.UseProxy.ToString());
-        _db.SetSetting("proxy_type", c.ProxyType);
-        _db.SetSetting("proxy_host", c.ProxyHost);
-        _db.SetSetting("proxy_port", c.ProxyPort.ToString());
-        _db.SetSetting("proxy_imap", c.ProxyForImap.ToString());
-        _db.SetSetting("proxy_deepseek", c.ProxyForDeepSeek.ToString());
-        _db.SetSetting("proxy_zoho", c.ProxyForZoho.ToString());
-        _db.SetSetting("proxy_smtp", c.ProxyForSmtp.ToString());
-
-        _db.SetSetting("zoho_api_base", c.ZohoApiBase);
-        _db.SetSetting("zoho_client_id", c.ZohoClientId);
-        _db.SetSetting("zoho_client_secret", CredentialService.Protect(c.ZohoClientSecret));
-        _db.SetSetting("zoho_refresh_token", CredentialService.Protect(c.ZohoRefreshToken));
-        _db.SetSetting("zoho_account_id", c.ZohoAccountId);
-
-        _db.SetSetting("email_font_family", c.EmailFontFamily);
-        _db.SetSetting("email_font_size", c.EmailFontSize.ToString());
-        _db.SetSetting("email_font_color", c.EmailFontColor);
-
-        _db.SetSetting("first_sync_days", c.FirstSyncDays.ToString());
-        _db.SetSetting("max_body_chars", c.MaxBodyChars.ToString());
-        _db.SetSetting("sync_concurrency", c.SyncConcurrency.ToString());
-        _db.SetSetting("auto_sync", c.EnableAutoSync.ToString());
-        _db.SetSetting("sync_mode", c.SyncMode);
         c.AutoSyncMinutes = Math.Clamp(c.AutoSyncMinutes, 1, 1440);
-        _db.SetSetting("auto_sync_minutes", c.AutoSyncMinutes.ToString());
-        _db.SetSetting("auto_track_support", c.AutoTrackSupportMailboxes.ToString());
+
+        // 一次连接 + 一个事务内写完（原先 40 多次 SetSetting 各自 Open/提交，保存设置时卡顿明显）
+        _db.SetSettings(
+            ("imap_host", c.ImapHost),
+            ("imap_port", c.ImapPort.ToString()),
+            ("imap_ssl", c.ImapUseSsl.ToString()),
+            ("imap_username", c.ImapUsername),
+            ("imap_password", CredentialService.Protect(c.ImapPassword)),
+            ("imap_folder", c.ImapFolder),
+            ("imap_sent_folder", c.ImapSentFolder),
+            ("smtp_host", c.SmtpHost),
+            ("smtp_port", c.SmtpPort.ToString()),
+            ("smtp_ssl", c.SmtpUseSsl.ToString()),
+            ("smtp_username", c.SmtpUsername),
+            ("smtp_password", CredentialService.Protect(c.SmtpPassword)),
+            ("monitored_addresses", string.Join(";", c.MonitoredAddresses)),
+            ("my_support_domains", string.Join(";", c.MySupportDomains)),
+            ("domain_mappings", JsonSerializer.Serialize(c.DomainEnterpriseMappings)),
+            ("product_aliases", JsonSerializer.Serialize(c.ProductAliases)),
+            ("deepseek_key", CredentialService.Protect(c.DeepSeekApiKey)),
+            ("deepseek_baseurl", c.DeepSeekBaseUrl),
+            ("deepseek_model", c.DeepSeekModel),
+            ("ai_provider", c.AiProvider),
+            ("ai_title", c.EnableAiTitle.ToString()),
+            ("ai_status", c.EnableAiStatus.ToString()),
+            ("ai_meta", c.EnableAiMeta.ToString()),
+            ("proxy_use", c.UseProxy.ToString()),
+            ("proxy_type", c.ProxyType),
+            ("proxy_host", c.ProxyHost),
+            ("proxy_port", c.ProxyPort.ToString()),
+            ("proxy_imap", c.ProxyForImap.ToString()),
+            ("proxy_deepseek", c.ProxyForDeepSeek.ToString()),
+            ("proxy_zoho", c.ProxyForZoho.ToString()),
+            ("proxy_smtp", c.ProxyForSmtp.ToString()),
+            ("zoho_api_base", c.ZohoApiBase),
+            ("zoho_client_id", c.ZohoClientId),
+            ("zoho_client_secret", CredentialService.Protect(c.ZohoClientSecret)),
+            ("zoho_refresh_token", CredentialService.Protect(c.ZohoRefreshToken)),
+            ("zoho_account_id", c.ZohoAccountId),
+            ("email_font_family", c.EmailFontFamily),
+            ("email_font_size", c.EmailFontSize.ToString()),
+            ("email_font_color", c.EmailFontColor),
+            ("first_sync_days", c.FirstSyncDays.ToString()),
+            ("max_body_chars", c.MaxBodyChars.ToString()),
+            ("sync_concurrency", c.SyncConcurrency.ToString()),
+            ("auto_sync", c.EnableAutoSync.ToString()),
+            ("sync_mode", c.SyncMode),
+            ("auto_sync_minutes", c.AutoSyncMinutes.ToString()),
+            ("auto_track_support", c.AutoTrackSupportMailboxes.ToString()));
         _config = c;
         SubjectParser.SetAliases(c.ProductAliases); // 设置保存后立即让新简称对后续解析生效
+        RefreshMonitoredSnapshot();
+        _zohoApi = null; // 代理/OAuth 配置可能已变，下次调用按新配置重建客户端
         // 关注的客服邮箱发生变化（新增/删除）→ 重置同步游标，下次同步重新拉取时间窗口内的邮件
         if (!SameMonitoredSet(oldMonitored, c.MonitoredAddresses))
             ResetSyncCursors();
@@ -167,8 +201,9 @@ public class WorkflowService
 
     // ================= 自动关注客服邮箱 =================
 
-    /// <summary>本次同步自动发现并加入关注的新邮箱（结束后统一持久化 + 重置游标）。</summary>
-    private readonly HashSet<string> _autoTrackedNew = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>本次同步自动发现并加入关注的新邮箱（结束后统一持久化 + 重置游标）。
+    /// 并发下载时会有多个线程写入，故用并发字典而非 HashSet。</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _autoTrackedNew = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>扫描地址串中符合 “local 含 support @ domain 含 manageengine/zohocorp” 的客服邮箱，自动加入关注列表（可在设置中关闭）。</summary>
     private void AutoTrackSupportMailboxes(params string[] addressStrings)
@@ -183,9 +218,15 @@ public class WorkflowService
     {
         addr = addr.Trim();
         if (!IsSupportMailbox(addr)) return;
-        if (_config.MonitoredAddresses.Any(m => string.Equals(m, addr, StringComparison.OrdinalIgnoreCase))) return;
-        _config.MonitoredAddresses.Add(addr);
-        _autoTrackedNew.Add(addr);
+        lock (_monitoredLock)
+        {
+            // 加锁的原因：IMAP 并发下载路径会在多个线程上同时回调到这里，List.Add 并发执行会损坏内部数组
+            if (_monitored.Contains(addr)) return;
+            _config.MonitoredAddresses.Add(addr);
+            _monitoredList = _config.MonitoredAddresses.ToArray();
+            _monitored = new HashSet<string>(_monitoredList, StringComparer.OrdinalIgnoreCase);
+        }
+        _autoTrackedNew.TryAdd(addr, 0);
     }
 
     /// <summary>@ 前含 support、@ 后含 manageengine 或 zohocorp 的客服邮箱。</summary>
@@ -202,10 +243,12 @@ public class WorkflowService
     /// <summary>同步结束后：把本次自动发现的新客服邮箱持久化并重置游标，下次同步全量拉取其历史邮件。</summary>
     private void FlushAutoTrackedMailboxes(IProgress<string>? progress)
     {
-        if (_autoTrackedNew.Count == 0) return;
-        _db.SetSetting("monitored_addresses", string.Join(";", _config.MonitoredAddresses));
+        if (_autoTrackedNew.IsEmpty) return;
+        string[] snapshot;
+        lock (_monitoredLock) snapshot = _config.MonitoredAddresses.ToArray();
+        _db.SetSetting("monitored_addresses", string.Join(";", snapshot));
         _db.ResetSyncCursors();
-        progress?.Report($"已自动关注客服邮箱：{string.Join("、", _autoTrackedNew.OrderBy(x => x))}，下次同步将拉取其历史邮件");
+        progress?.Report($"已自动关注客服邮箱：{string.Join("、", _autoTrackedNew.Keys.OrderBy(x => x))}，下次同步将拉取其历史邮件");
         _autoTrackedNew.Clear();
     }
 
@@ -366,10 +409,12 @@ public class WorkflowService
 
     private async Task<int> ZohoSyncAsync(IProgress<string>? progress, CancellationToken ct)
     {
-        var api = new ZohoMailApiService(_config);
+        var api = ZohoApi();
         var accountId = await api.GetAccountIdAsync(ct);
         if (accountId == null)
-            throw new InvalidOperationException("无法获取 Zoho 账号，请检查 REST API 配置（Client ID/Secret/Refresh Token）。");
+            throw new InvalidOperationException(
+                "无法获取 Zoho 账号，请检查 REST API 配置（Client ID/Secret/Refresh Token）。" +
+                (string.IsNullOrEmpty(api.LastError) ? "" : $" 接口返回：{api.LastError}"));
         await api.LoadAccountTimeZoneAsync(accountId.Value, ct); // 推导发送时间偏移，校准邮件发送时间
         var folders = await api.GetFoldersAsync(accountId.Value, ct);
         var inbox = folders.FirstOrDefault(f => f.Name.Equals("Inbox", StringComparison.OrdinalIgnoreCase));
@@ -512,14 +557,13 @@ public class WorkflowService
     private bool IsMonitoredZoho(EmailMessage e)
     {
         if (IsNotificationSender(e.FromAddress)) return true; // 厂商通知（如日志上传）直接采集
-        if (_config.MonitoredAddresses.Count == 0) return true;
+        if (_monitored.Count == 0) return true;
         // 已关注线索的延续/回复：本地已有同 Zoho 线程的邮件即纳入
         if (e.ZohoThreadId is > 0 && _db.EmailExistsByZohoThreadId(e.ZohoThreadId.Value)) return true;
         var participants = new List<string> { e.FromAddress };
         participants.AddRange(SplitList(e.ToAddresses));
         participants.AddRange(SplitList(e.CcAddresses));
-        return _config.MonitoredAddresses.Any(m =>
-            participants.Any(p => string.Equals(p, m, StringComparison.OrdinalIgnoreCase)));
+        return participants.Any(p => _monitored.Contains(p));
     }
 
     /// <summary>厂商工单通知发件人（如日志上传通知），即使不在关注列表也应采集，用于更新线索状态。</summary>
@@ -546,14 +590,13 @@ public class WorkflowService
     private bool IsMonitoredSummary(ZohoMessageSummary m)
     {
         if (IsNotificationSender(m.FromAddress)) return true; // 厂商通知（如日志上传）直接采集
-        if (_config.MonitoredAddresses.Count == 0) return true;
+        if (_monitored.Count == 0) return true;
         // 已关注线索的延续/回复：本地已有同 Zoho 线程的邮件，即使参与人不在关注列表也纳入
         if (m.ThreadId > 0 && _db.EmailExistsByZohoThreadId(m.ThreadId)) return true;
         var participants = new List<string> { m.FromAddress };
         foreach (var a in ExtractAddressesFromString(m.ToAddress)) participants.Add(a);
         foreach (var a in ExtractAddressesFromString(m.CcAddress)) participants.Add(a);
-        return _config.MonitoredAddresses.Any(addr =>
-            participants.Any(p => string.Equals(p, addr, StringComparison.OrdinalIgnoreCase)));
+        return participants.Any(p => _monitored.Contains(p));
     }
 
     /// <summary>从地址串中提取所有邮箱地址（Zoho 的 to/cc 常带姓名与 HTML 编码）。</summary>
@@ -791,7 +834,7 @@ public class WorkflowService
     {
         var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         AddDomain(set, _config.ImapUsername);
-        foreach (var addr in _config.MonitoredAddresses) AddDomain(set, addr);
+        foreach (var addr in _monitored) AddDomain(set, addr);
         return set;
     }
 
@@ -911,7 +954,7 @@ public class WorkflowService
 
     /// <summary>可用的客服收件邮箱（关注的客服邮箱，去重；含自动发现的 support 邮箱）。</summary>
     public List<string> GetSupportRecipients()
-        => _config.MonitoredAddresses.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        => _monitored.ToList();
 
     // ================= 联系人姓名映射（从收件/抄送的 “姓名<邮箱>” 提取） =================
     private readonly Dictionary<string, Dictionary<string, int>> _contactNames = new(StringComparer.OrdinalIgnoreCase);
@@ -1006,8 +1049,7 @@ public class WorkflowService
     {
         addr = addr.Trim();
         if (string.Equals(addr, _config.ImapUsername, StringComparison.OrdinalIgnoreCase)) return true;
-        if (_config.MonitoredAddresses.Any(m => string.Equals(m.Trim(), addr, StringComparison.OrdinalIgnoreCase)))
-            return true;
+        if (IsMonitoredAddress(addr)) return true;
         var at = addr.LastIndexOf('@');
         if (at < 0 || at == addr.Length - 1) return true;
         var domain = addr[(at + 1)..].Trim();
@@ -1046,8 +1088,7 @@ public class WorkflowService
         var local = addr[..at].ToLowerInvariant();
         var domain = addr[(at + 1)..].Trim();
         // 排除客服/厂商支持邮箱（收信人，不是同事）：已被关注 或 @前含 support 且 @后含 manageengine/zohocorp
-        if (_config.MonitoredAddresses.Any(m => string.Equals(m.Trim(), addr, StringComparison.OrdinalIgnoreCase)))
-            return;
+        if (IsMonitoredAddress(addr)) return;
         var dl = domain.ToLowerInvariant();
         if (local.Contains("support") && (dl.Contains("manageengine") || dl.Contains("zohocorp")))
             return;
@@ -1177,10 +1218,10 @@ public class WorkflowService
         "TicketManager", "attachments");
 
     /// <summary>下载某封邮件的指定附件到缓存目录并返回本地路径；已缓存直接返回；下载失败返回 null。</summary>
-    public string? DownloadAttachment(long emailId, string attachmentName)
+    public async Task<string?> DownloadAttachmentAsync(long emailId, string attachmentName, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(attachmentName)) return null;
-        var email = _db.LoadAllEmails().FirstOrDefault(e => e.Id == emailId);
+        var email = _db.GetEmailById(emailId);
         if (email == null) return null;
 
         var dir = Path.Combine(AttachmentCacheDir, emailId.ToString());
@@ -1195,33 +1236,38 @@ public class WorkflowService
             {
                 // IMAP 路径：按 文件夹+UID+附件名 重连邮箱下载
                 var imap = new ImapSyncService(_config);
-                bytes = imap.DownloadAttachment(email.Folder, email.Uid, attachmentName);
+                bytes = await imap.DownloadAttachmentAsync(email.Folder, email.Uid, attachmentName, ct);
             }
             else if (!string.IsNullOrEmpty(email.ZohoMessageId))
             {
                 // Zoho 路径：历史邮件可能缺 folderId / 附件元数据，先回填（attachmentinfo），再按 attachmentId 下载
                 if (email.ZohoFolderId <= 0 || email.Attachments.Count == 0)
                 {
-                    EnsureAttachments(emailId);
-                    email = _db.LoadAllEmails().First(e => e.Id == emailId);
+                    await EnsureAttachmentsAsync(emailId, ct);
+                    email = _db.GetEmailById(emailId) ?? email;
                 }
                 var att = email.Attachments.FirstOrDefault(a =>
                     string.Equals(a.Name, attachmentName, StringComparison.OrdinalIgnoreCase));
                 if (att != null && !string.IsNullOrEmpty(att.Id) && email.ZohoFolderId > 0 &&
                     long.TryParse(email.ZohoMessageId, out var zid))
                 {
-                    var api = new ZohoMailApiService(_config);
-                    var accountId = api.GetAccountIdAsync().GetAwaiter().GetResult();
+                    var api = ZohoApi();
+                    var accountId = await api.GetAccountIdAsync(ct);
                     if (accountId is long acc)
-                        bytes = api.DownloadAttachmentAsync(acc, email.ZohoFolderId, zid, att.Id)
-                            .GetAwaiter().GetResult();
+                        bytes = await api.DownloadAttachmentAsync(acc, email.ZohoFolderId, zid, att.Id, ct);
+                    else
+                        App.Log("Zoho.DownloadAttachment", new Exception($"获取账号失败（邮件 {emailId}）：{api.LastError ?? "未知原因"}"));
                 }
             }
         }
-        catch { bytes = null; }
+        catch (Exception ex)
+        {
+            App.Log("DownloadAttachment", ex);
+            bytes = null;
+        }
 
         if (bytes == null || bytes.Length == 0) return null;
-        File.WriteAllBytes(path, bytes);
+        await File.WriteAllBytesAsync(path, bytes, ct);
         return path;
     }
 
@@ -1236,13 +1282,13 @@ public class WorkflowService
     }
 
     /// <summary>解析某封 Zoho 邮件的 folderId：优先已存值；为 0（历史邮件）时按文件夹名匹配 Zoho 文件夹列表并持久化。</summary>
-    private long ResolveZohoFolderId(EmailMessage email, ZohoMailApiService api)
+    private async Task<long> ResolveZohoFolderIdAsync(EmailMessage email, ZohoMailApiService api, CancellationToken ct)
     {
         if (email.ZohoFolderId > 0) return email.ZohoFolderId;
         if (string.IsNullOrEmpty(email.Folder)) return 0;
-        var acc = api.GetAccountIdAsync().GetAwaiter().GetResult();
+        var acc = await api.GetAccountIdAsync(ct);
         if (acc is not long a) return 0;
-        var folders = api.GetFoldersAsync(a).GetAwaiter().GetResult();
+        var folders = await api.GetFoldersAsync(a, ct);
         var fid = folders.FirstOrDefault(f => string.Equals(f.Name, email.Folder, StringComparison.OrdinalIgnoreCase))?.Id ?? 0;
         if (fid > 0)
         {
@@ -1255,23 +1301,24 @@ public class WorkflowService
     /// <summary>
     /// 按需回填附件元数据：历史邮件（增量同步不重下）没有附件名，用户选中时拉取一次 Zoho attachmentinfo 提取附件名并入库。
     /// 仅支持 Zoho 邮件。返回语义：null=调用失败（限流/网络，应允许重试）；空列表=确认无附件；非空=附件列表。
+    /// 失败原因（HTTP 状态、限流、OAuth 错误）会写入 error.log，并体现在返回的 null 上。
     /// </summary>
-    public List<EmailAttachment>? EnsureAttachments(long emailId)
+    public async Task<List<EmailAttachment>?> EnsureAttachmentsAsync(long emailId, CancellationToken ct = default)
     {
-        var email = _db.LoadAllEmails().FirstOrDefault(e => e.Id == emailId);
+        var email = _db.GetEmailById(emailId);
         if (email == null) return null;
         if (email.Attachments.Count > 0) return email.Attachments;
         if (string.IsNullOrEmpty(email.ZohoMessageId)) return new List<EmailAttachment>();
         try
         {
-            var api = new ZohoMailApiService(_config);
+            var api = ZohoApi();
             if (!long.TryParse(email.ZohoMessageId, out var zid)) return new List<EmailAttachment>();
-            var accountId = api.GetAccountIdAsync().GetAwaiter().GetResult();
-            if (accountId is not long acc) return null; // 获取账号失败（限流等）→ 允许重试
-            var fid = ResolveZohoFolderId(email, api); // 历史邮件 folderId 为 0，按文件夹名解析并回填
-            if (fid <= 0) return null; // 无法定位文件夹（含 API 失败）→ 允许重试
-            var info = api.GetAttachmentInfoAsync(acc, fid, zid).GetAwaiter().GetResult();
-            if (info == null) return null; // attachmentinfo 调用失败（限流等）→ 允许重试
+            var accountId = await api.GetAccountIdAsync(ct);
+            if (accountId is not long acc) { LogZohoFailure("EnsureAttachments", emailId, api); return null; } // 允许重试
+            var fid = await ResolveZohoFolderIdAsync(email, api, ct); // 历史邮件 folderId 为 0，按文件夹名解析并回填
+            if (fid <= 0) { LogZohoFailure("EnsureAttachments", emailId, api); return null; }                   // 允许重试
+            var info = await api.GetAttachmentInfoAsync(acc, fid, zid, ct);
+            if (info == null) { LogZohoFailure("EnsureAttachments", emailId, api); return null; }               // 允许重试
             var atts = ZohoMailApiService.ExtractAttachments(info);
             if (atts.Count > 0)
             {
@@ -1280,35 +1327,43 @@ public class WorkflowService
             }
             return atts;
         }
-        catch
+        catch (Exception ex)
         {
+            App.Log("EnsureAttachments", ex);
             return null; // 异常 → 允许重试
         }
+    }
+
+    /// <summary>把 Zoho 调用失败的具体原因（HTTP 状态 / OAuth 错误 / 限流）落到日志，便于区分“没权限”“被限流”“网络不通”。</summary>
+    private static void LogZohoFailure(string action, long emailId, ZohoMailApiService api)
+    {
+        if (string.IsNullOrEmpty(api.LastError)) return;
+        App.Log($"Zoho.{action}", new Exception($"邮件 {emailId} 调用失败：{api.LastError}"));
     }
 
     /// <summary>内嵌图片回填结果：Handled=true 表示已处理（回填成功或确认无图，可防重复）；NewBody 非空表示正文需刷新。</summary>
     public record InlineBackfillResult(bool Handled, string? NewBody);
 
     /// <summary>
-    /// 历史邮件回填正文内嵌图片：BodyText 无占位符时重新拉取 Zoho content HTML，提取 <img cid> 占位符并下载 isInline 图片，
+    /// 历史邮件回填正文内嵌图片：BodyText 无占位符时重新拉取 Zoho content HTML，提取 &lt;img cid&gt; 占位符并下载 isInline 图片，
     /// 更新 DB 的 BodyText/InlineImages 并落盘图片。返回 Handled=false 表示 API 失败（限流等），允许下次重试。
     /// </summary>
-    public InlineBackfillResult EnsureInlineImages(long emailId)
+    public async Task<InlineBackfillResult> EnsureInlineImagesAsync(long emailId, CancellationToken ct = default)
     {
-        var email = _db.LoadAllEmails().FirstOrDefault(e => e.Id == emailId);
+        var email = _db.GetEmailById(emailId);
         if (email == null) return new InlineBackfillResult(false, null);
         if (InlineImage.HasPlaceholder(email.BodyText)) return new InlineBackfillResult(true, null); // 已回填
         if (string.IsNullOrEmpty(email.ZohoMessageId)) return new InlineBackfillResult(true, null); // 非 Zoho 不支持回填
         try
         {
-            var api = new ZohoMailApiService(_config);
+            var api = ZohoApi();
             if (!long.TryParse(email.ZohoMessageId, out var zid)) return new InlineBackfillResult(true, null);
-            var accountId = api.GetAccountIdAsync().GetAwaiter().GetResult();
-            if (accountId is not long acc) return new InlineBackfillResult(false, null); // API 失败 → 可重试
-            var fid = ResolveZohoFolderId(email, api);
-            if (fid <= 0) return new InlineBackfillResult(false, null);
-            var content = api.GetMessageContentAsync(acc, fid, zid).GetAwaiter().GetResult();
-            if (content == null) return new InlineBackfillResult(false, null);
+            var accountId = await api.GetAccountIdAsync(ct);
+            if (accountId is not long acc) { LogZohoFailure("EnsureInlineImages", emailId, api); return new InlineBackfillResult(false, null); }
+            var fid = await ResolveZohoFolderIdAsync(email, api, ct);
+            if (fid <= 0) { LogZohoFailure("EnsureInlineImages", emailId, api); return new InlineBackfillResult(false, null); }
+            var content = await api.GetMessageContentAsync(acc, fid, zid, ct);
+            if (content == null) { LogZohoFailure("EnsureInlineImages", emailId, api); return new InlineBackfillResult(false, null); }
             var imageCids = new List<string>();
             var body = "";
             if (content.Value.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String)
@@ -1316,7 +1371,7 @@ public class WorkflowService
             if (!InlineImage.HasPlaceholder(body)) return new InlineBackfillResult(true, null); // 确认无内嵌图片
 
             // 下载 isInline 内嵌图片（按 cid 出现顺序与 isInline 附件顺序对应，尽力）
-            var attachInfo = api.GetAttachmentInfoAsync(acc, fid, zid).GetAwaiter().GetResult();
+            var attachInfo = await api.GetAttachmentInfoAsync(acc, fid, zid, ct);
             var inlineFiles = new List<string>();
             var inlineBytes = new List<byte[]>();
             if (attachInfo != null && attachInfo.Value.TryGetProperty("attachments", out var attsArr) && attsArr.ValueKind == JsonValueKind.Array)
@@ -1332,7 +1387,7 @@ public class WorkflowService
                     inlineFiles.Add($"img{idx}{(string.IsNullOrEmpty(ext) ? ".png" : ext)}");
                     inlineBytes.Add(string.IsNullOrEmpty(id)
                         ? Array.Empty<byte>()
-                        : api.DownloadAttachmentAsync(acc, fid, zid, id).GetAwaiter().GetResult() ?? Array.Empty<byte>());
+                        : await api.DownloadAttachmentAsync(acc, fid, zid, id, ct) ?? Array.Empty<byte>());
                 }
             }
 
@@ -1341,8 +1396,9 @@ public class WorkflowService
             InlineImageStorage.Save(tmp);
             return new InlineBackfillResult(true, body);
         }
-        catch
+        catch (Exception ex)
         {
+            App.Log("EnsureInlineImages", ex);
             return new InlineBackfillResult(false, null);
         }
     }

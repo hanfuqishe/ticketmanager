@@ -136,6 +136,11 @@
         <Style x:Key="TreeViewItemGuideStyle" TargetType="TreeViewItem">
             <!-- 双向绑定：用户手动展开/折叠会写回 VM，过滤重建树时才能保留实际折叠层次 -->
             <Setter Property="IsExpanded" Value="{Binding ExpandedByDefault, Mode=TwoWay}"/>
+            <!-- 点击/双击本行展开后：若该行是线索根节点且线索内有新邮件，自动选中第 1 封新邮件 -->
+            <EventSetter Event="PreviewMouseLeftButtonDown" Handler="TreeViewItem_PreviewMouseLeftButtonDown"/>
+            <EventSetter Event="Expanded" Handler="TreeViewItem_Expanded"/>
+            <!-- 收起钉住中的行时，当场把视图滚回来，让它正好落在钉住区下沿（否则副本消失、真行还留在视口上方） -->
+            <EventSetter Event="Collapsed" Handler="TreeViewItem_Collapsed"/>
             <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
             <Setter Property="Template">
                 <Setter.Value>
@@ -189,9 +194,6 @@
                             <DataTrigger Binding="{Binding Depth}" Value="0">
                                 <Setter TargetName="RowBg" Property="Background" Value="#EAF3FD"/>
                             </DataTrigger>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="RowBg" Property="Background" Value="#F2F2F2"/>
-                            </Trigger>
                             <Trigger Property="IsSelected" Value="True">
                                 <Setter TargetName="RowBg" Property="Background" Value="#D6E8F7"/>
                                 <Setter TargetName="SelBar" Property="Visibility" Value="Visible"/>
@@ -382,14 +384,16 @@
                             <Path Data="{StaticResource IconStar}" Width="12" Height="12" Stretch="Uniform">
                                 <Path.Style>
                                     <Style TargetType="Path">
-                                        <!-- 灰=本封无星；实心黄=本封已标星；空心黄描边=本封未标但线索内其它邮件有星标（根行提示） -->
+                                        <!-- 灰=本封无星；实心黄=本封已标星；空心黄描边=本封未标但线索内其它邮件有星标（根行提示）。
+                                             描边一律用与填充同色（不能设 Transparent）：Stretch=Uniform 只把图形铺满 12×12，
+                                             1.2px 描边是画在框外的，透明描边会让图形比空心星小一圈（实测 12px vs 14px）。 -->
                                         <Setter Property="Fill" Value="#C9C9C9"/>
-                                        <Setter Property="Stroke" Value="Transparent"/>
+                                        <Setter Property="Stroke" Value="#C9C9C9"/>
                                         <Setter Property="StrokeThickness" Value="1.2"/>
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding IsStarred}" Value="True">
                                                 <Setter Property="Fill" Value="#F5A623"/>
-                                                <Setter Property="Stroke" Value="Transparent"/>
+                                                <Setter Property="Stroke" Value="#F5A623"/>
                                             </DataTrigger>
                                             <!-- 空心星：白色不透明内芯（不透出根行浅蓝/悬停底色）+ 深黄描边 -->
                                             <DataTrigger Binding="{Binding ThreadHasOtherStar}" Value="True">
@@ -549,6 +553,12 @@
                 <MenuItem Header="显示到产品名称" Tag="2" Click="SetExpandDepth_Click"/>
                 <MenuItem Header="显示到线索首邮件" Tag="3" Click="SetExpandDepth_Click"/>
                 <MenuItem Header="显示所有邮件" Tag="4" Click="SetExpandDepth_Click"/>
+                <Separator/>
+                <MenuItem Header="运行日志…(_L)" Click="OpenLogWindow_Click">
+                    <MenuItem.Icon>
+                        <Path Data="{StaticResource IconDoc}" Fill="#455A64" Width="15" Height="15" Stretch="Uniform"/>
+                    </MenuItem.Icon>
+                </MenuItem>
             </MenuItem>
             <MenuItem Header="帮助(_H)">
                 <MenuItem Header="关于…(_A)" Click="About_Click">
@@ -655,6 +665,15 @@
                           BorderThickness="0" BorderBrush="#e0e0e0">
                 </TreeView>
             </DockPanel>
+
+            <!-- 上层各级“钉住”浮层：滚动时把已滚出视口的 客户/产品/线索 行重新显示在树顶部，只让它们下面的邮件行滚出屏幕；
+                 某段内容滚完后，对应表头在自己槽位里向上卷出，自内向外依次退出（见 UpdateStickyHeaders）。
+                 与树叠放在同一格子（后声明者在上层）；右侧留出滚动条宽度，避免挡住滚动条。 -->
+            <Border x:Name="StickyHost" Grid.Column="0" VerticalAlignment="Top" HorizontalAlignment="Stretch"
+                    Background="Transparent" ClipToBounds="True"
+                    Margin="0,0,17,0" Visibility="Collapsed" Panel.ZIndex="10">
+                <StackPanel x:Name="StickyRowsHost"/>
+            </Border>
 
             <GridSplitter Grid.Column="1" HorizontalAlignment="Stretch" Background="#e8e8e8"/>
 

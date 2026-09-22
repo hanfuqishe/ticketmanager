@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -14,6 +15,7 @@ using System.Windows.Threading;
 using ClosedXML.Excel;
 using Microsoft.Win32;
 using TicketManager.Models;
+using TicketManager.Services;
 using TicketManager.ViewModels;
 
 namespace TicketManager;
@@ -21,6 +23,7 @@ namespace TicketManager;
 public partial class MainWindow : Window
 {
     private readonly MainViewModel _vm;
+    private Views.LogWindow? _logWindow; // 运行日志窗口（单例，关闭后置空）
     private System.Windows.Forms.NotifyIcon? _trayIcon;
     private System.Drawing.Icon? _trayBaseIcon; // 原始托盘图标（无角标）
     private System.Windows.Threading.DispatcherTimer? _trayBadgeTimer;
@@ -62,8 +65,10 @@ public partial class MainWindow : Window
         _vm.ClosedThreadFadeOutRequested += OnClosedThreadFadeOut;
         _vm.IgnoreFadeOutRequested += OnIgnoreFadeOut;
         _vm.NewMailCountChanged += UpdateTrayBadge; // 已读后即时刷新托盘角标（无新邮件即清除）
+        TreeView.Loaded += (_, _) => HookStickyHeaders(); // 滚动时钉住上层各级（客户/产品/线索）
+        _stickyTimer.Tick += StickyTimer_Tick;
         RenderEmailBody(); // 初始（空）正文
-        _vm.AutoSyncAndListen(); // 启动后自动同步，随后进入自动收取新邮件模式
+        _vm.StartAutoSyncAndListen(); // 启动后自动同步，随后进入自动收取新邮件模式
     }
 
     /// <summary>把正文渲染进 RichTextBox：当前正文黑色，引用默认折叠为可展开链接，展开后灰色斜体显示。
@@ -228,7 +233,10 @@ public partial class MainWindow : Window
                 _trayIcon.Icon = _trayBaseIcon;
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            App.Log("TrayIcon", ex); // 图标加载失败不影响托盘功能，但要留痕
+        }
         _trayIcon.Text = "工单邮件管理器";
         var menu = new System.Windows.Forms.ContextMenuStrip();
         menu.Items.Add("显示主窗口", null, (_, _) => RestoreFromTray());
@@ -340,6 +348,19 @@ public partial class MainWindow : Window
         return IntPtr.Zero;
     }
 
+    /// <summary>视图菜单“运行日志…”：打开（或激活已打开的）运行日志窗口，显示状态栏消息历史。</summary>
+    private void OpenLogWindow_Click(object sender, RoutedEventArgs e)
+    {
+        if (_logWindow is { IsLoaded: true })
+        {
+            _logWindow.Activate();
+            return;
+        }
+        _logWindow = new Views.LogWindow(_vm) { Owner = this };
+        _logWindow.Closed += (_, _) => _logWindow = null;
+        _logWindow.Show();
+    }
+
     /// <summary>是否真正退出程序（托盘/主菜单“退出”时置位）；为 false 时点关闭按钮只缩到托盘。</summary>
     private bool _isRealClosing;
 
@@ -439,6 +460,43 @@ public partial class MainWindow : Window
 
     private long? _selectionAnchorThreadId; // Shift 范围选择的锚点
 
+    /// <summary>最近一次被鼠标点中的树行、以及点击时刻：用来把“展开”区分成用户操作（点箭头 / 双击行）。</summary>
+    private TreeViewItem? _lastClickedRow;
+    private long _lastClickedTicks;
+
+    /// <summary>点击到展开的允许间隔（双击包含两次点击，留宽一些）。</summary>
+    private const long ClickToExpandWindowMs = 1000;
+
+    /// <summary>
+    /// 鼠标按下某行：只记录“刚刚点过这一行”。双击展开的第二次按下也会走到这里，
+    /// 因此点左侧三角（ToggleButton）与双击行两种展开方式都能被下面的 Expanded 识别为用户展开。
+    /// </summary>
+    private void TreeViewItem_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not TreeViewItem tvi) return;
+        _lastClickedRow = tvi;
+        _lastClickedTicks = Environment.TickCount64;
+    }
+
+    /// <summary>
+    /// 树行展开时：若是用户刚点了这一行导致的展开（点箭头 / 双击），且该行是线索根节点且线索内有新邮件，
+    /// 则自动选中并滚动到线索中的第 1 封新邮件（按发送时间最早的那封；选中后走“延迟 1 秒置为已读”）。
+    /// 不认程序化展开（展开层次、展开上级带出、过滤重建等）：那些时候没人在点这一行，不会出现整树乱跳。
+    /// </summary>
+    private void TreeViewItem_Expanded(object sender, RoutedEventArgs e)
+    {
+        // Expanded 是冒泡事件：祖先行也会收到，用 sender 是否为“刚点的那一行”过滤
+        if (sender is not TreeViewItem tvi || tvi.DataContext is not EmailNodeViewModel ev || !ev.IsRoot) return;
+        if (!ReferenceEquals(tvi, _lastClickedRow)) return;
+        if (Environment.TickCount64 - _lastClickedTicks > ClickToExpandWindowMs) return;
+        _lastClickedRow = null; // 一次点击只响应一次展开
+        if (!ev.ThreadOwner.HasNewMail) return;   // 线索内没有新邮件
+        var firstNew = ev.ThreadOwner.Thread.Emails
+            .Where(x => x.IsNew).OrderBy(x => x.DateSent).FirstOrDefault();
+        if (firstNew == null) return;
+        if (_vm.FindEmailNode(firstNew.Id) is { } node) SelectAndScrollToEmail(node);
+    }
+
     /// <summary>返回包含指定线程 Id 的产品分组内的全部线索根节点（用于 Shift 范围选择）。</summary>
     private List<EmailNodeViewModel> SiblingRoots(long threadId)
     {
@@ -447,6 +505,428 @@ public partial class MainWindow : Window
                 if (prod.Threads.Any(t => t.Email.ThreadId == threadId))
                     return prod.Threads.ToList();
         return new List<EmailNodeViewModel>();
+    }
+
+    // ===== 滚动时把上层各级“钉”在树顶部（客户/产品/线索不随邮件滚出屏幕）=====
+    // 做法：把已滚出视口的祖先行复制到树顶部的浮层（StickyHost）里钉住，它们下面的邮件照常滚动、从浮层下面穿过去。
+    // 位置按“逐级卷出”算：每个槽位（高度 = 该行高度）把行裁掉，行在槽位里上滑，
+    // 滑出距离 = 自身高度，滑完正好被裁没；且自内向外串行——线索滑完才轮到产品，产品滑完才轮到客户。
+
+    private ScrollViewer? _treeScrollViewer;                        // 树内部滚动容器（取行坐标用）
+    private const int StickyThrottleMs = 40;                        // 浮层重算的最小间隔（约 25 次/秒）
+    private const double StickyScanLimit = 400;                     // 行收集下界：视口顶部往下这么多像素
+    private readonly DispatcherTimer _stickyTimer = new() { Interval = TimeSpan.FromMilliseconds(StickyThrottleMs) };
+    private bool _stickyDirty;
+    private long _stickyLastTick;
+    private readonly List<(Border Slot, Border Wrap, TreeViewItem Row)> _stickyPool = new();
+    private double _stickyStackHeight;     // 当前钉住区总高（滚轮按整行滚动时要用）
+    private readonly List<object?> _stickyVms = new();              // 当前钉住的各级数据（外层 → 内层）
+    private readonly List<double> _stickyHeights = new();           // 与上面一一对应的各级行高（收起回滚要算“上面几级多高”）
+
+    /// <summary>钉住行的底色（必须不透明）：比内容区略深的浅灰，一眼能看出“这几行是钉在上面的”。</summary>
+    private static readonly Brush StickyRowBackground = new SolidColorBrush(Color.FromRgb(0xF0, 0xF0, 0xF0));
+
+    /// <summary>浮层里的一行：容器、表头矩形（相对滚动容器）、层级深度。</summary>
+    private readonly record struct StickyRowInfo(TreeViewItem Row, Rect Header, int Depth);
+
+    /// <summary>挂上滚动/布局监听（TreeView 模板就绪后调用；容器未生成时自动重试）。
+    /// LayoutUpdated 会非常频繁地触发，所以统一走 RequestStickyUpdate 做节流（最快 40ms 一次）。</summary>
+    private void HookStickyHeaders()
+    {
+        _treeScrollViewer = FindScrollViewer(TreeView);
+        if (_treeScrollViewer == null)
+        {
+            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(HookStickyHeaders));
+            return;
+        }
+        _treeScrollViewer.ScrollChanged += (_, _) => RequestStickyUpdate();
+        TreeView.PreviewMouseWheel += TreeView_PreviewMouseWheel;   // 滚轮改为“一格 = 一整行”，避免先冲后回造成的敌闪
+        // 展开/折叠、过滤重建、增量合并都会改变行位置 → 再用 LayoutUpdated 兜底。
+        TreeView.LayoutUpdated += (_, _) => RequestStickyUpdate();
+        RequestStickyUpdate();
+    }
+
+    /// <summary>节流：滚动/布局变化先攒着，最快 40ms 重算一次（避免每帧跑一遍行收集）。</summary>
+    private void RequestStickyUpdate()
+    {
+        _stickyDirty = true;
+        if (_stickyTimer.IsEnabled) return;
+        if (Environment.TickCount64 - _stickyLastTick >= StickyThrottleMs)
+        {
+            _stickyDirty = false;
+            _stickyLastTick = Environment.TickCount64;
+            UpdateStickyHeaders();
+        }
+        else
+        {
+            _stickyTimer.Start();
+        }
+    }
+
+    private void StickyTimer_Tick(object? sender, EventArgs e)
+    {
+        _stickyTimer.Stop();
+        if (!_stickyDirty) return;
+        _stickyDirty = false;
+        _stickyLastTick = Environment.TickCount64;
+        UpdateStickyHeaders();
+    }
+
+    /// <summary>
+    /// 滚轮：一格精确滚动一整行（以“钉住区下沿”为基准取相邻那一行的顶端），而不是让 WPF 先滚固定像素、
+    /// 再被行对齐拉回来——那种“先冲后回”在滚动时看起来就是闪烁。
+    /// </summary>
+    private void TreeView_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        var sv = _treeScrollViewer;
+        if (sv == null || e.Delta == 0) return;
+        if ((Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Shift | ModifierKeys.Alt)) != 0) return; // 带修饰键时不接管
+
+        var rows = new List<StickyRowInfo>();
+        CollectRows(TreeView, sv, 0, StickyScanLimit, rows);
+        if (rows.Count == 0) return;
+
+        double offset = sv.VerticalOffset;
+        double line = offset + _stickyStackHeight;   // 钉住区下沿在内容坐标里的位置
+        double next = double.PositiveInfinity, prev = double.NegativeInfinity;
+        foreach (var r in rows)
+        {
+            double t = r.Header.Top + offset;
+            if (t > line + 0.5 && t < next) next = t;
+            else if (t < line - 0.5 && t > prev) prev = t;
+        }
+
+        double targetTop = e.Delta > 0 ? prev : next;               // 向前滚一行 / 向后滚一行
+        if (double.IsInfinity(targetTop) || double.IsNegativeInfinity(targetTop)) return; // 已到顶/到底，交给默认行为
+
+        double want = targetTop - _stickyStackHeight;
+        if (want < 0 || want > sv.ScrollableHeight) return;
+        if (Math.Abs(want - offset) < 0.5) { e.Handled = true; return; } // 已对齐，不再动
+        sv.ScrollToVerticalOffset(want);
+        e.Handled = true;
+    }
+
+    private void TreeViewItem_Collapsed(object sender, RoutedEventArgs e)
+    {
+        if (e.Handled) return;   // 本事件会沿树上冒、每级容器都被叫到一次，只处理第一遍
+        // 只处理真正被收起的那一行（事件会从它往上层冒泡，用 OriginalSource 定位）。
+        // 注意：树里的容器会被虚拟化回收/重建，回收时也会报 Collapsed，所以判据必须收紧，
+        // 否则会记下一个“垃圾目标”，一有刷新就把视图滚到别处（现象：随便点一下钉住行就飞出去）。
+        if (e.OriginalSource is not TreeViewItem tvi || !tvi.IsVisible || !tvi.HasItems) return;
+        // 它必须正是当前在浮层里显示的那一行（有可见的钉住副本），且表头已经压在钉住区里才算“正被钉住”
+        bool pinnedCopy = _stickyPool.Any(p => p.Slot.Visibility == Visibility.Visible
+                                               && ReferenceEquals(p.Row.DataContext, tvi.DataContext));
+        if (!pinnedCopy) return;
+        var sv = _treeScrollViewer;
+        if (sv == null || !TryGetHeaderRect(tvi, sv, out var r)) return;
+        if (r.Top >= _stickyStackHeight - 0.5) return;      // 表头还在钉住区下面 → 本来就是普通行，收起后自然留在原地
+
+        int level = _stickyVms.FindIndex(v => ReferenceEquals(v, tvi.DataContext));
+        if (level < 0) return;                              // 不在钉住链里，管不着
+
+        // 收起后它的子项立刻消失，而它的真实行还在视口上方很远（它就是因此才被钉住的）。
+        // 要让它重新出现在“钉住区下沿”那个位置 —— 并且必须当场滚：
+        // 等下一次浮层重算（树重排完、可能已过几百毫秒）再滚，就是“先收起、过一会儿画面整块跳一下”，看着就是闪。
+        double above = 0;                                   // 收起后新的钉住区高度 = 它上面各级之和
+        for (int i = 0; i < level; i++) above += _stickyHeights[i];
+        if (level > 0 && !(above > 0)) return;               // 还没量出行高，等下一次重算
+        double target = r.Top + sv.VerticalOffset - above;
+        if (target < 0 || target > sv.ScrollableHeight) return;   // 挪不过去（已经在最顶/最底），保持原状
+        sv.ScrollToVerticalOffset(target);
+        e.Handled = true;   // 已经在“被收起的那一行”处理过了，不必再让上层容器重算一遍
+    }
+
+    /// <summary>重算并刷新浮层（随滚动/布局变化调用）。</summary>
+    private void UpdateStickyHeaders()
+    {
+        var sv = _treeScrollViewer;
+        if (sv == null) return;
+
+        // 只关心视口顶部往下一点的行：更靠下的行只会算出“不滑出”，用不着
+        var rows = new List<StickyRowInfo>();
+        CollectRows(TreeView, sv, 0, StickyScanLimit, rows);
+
+        // 钉住链（外层 → 内层）：一级一级往下找“当前那一段”的组行。
+        // 判据是“这一行的表头是否已经被钉住区盖住一部分”（顶端越过了它该待的槽位，槽位 = 上面已钉住各级高度之和）：
+        // 还没越过 → 它在树里自己完整可见，不钉（钉了反而会盖住它、吃掉点击与左侧箭头）；
+        // 越过了才钉住。每级取“同级里最后一个已越过的展开组行”，它必然是上一级那行的子孙，链自然有序嵌套。
+        var chain = new List<StickyRowInfo>();
+        double slotTop = 0;
+        for (int depth = 0; rows.Count > 0; depth++)
+        {
+            StickyRowInfo? pick = null;
+            foreach (var r in rows)
+            {
+                if (r.Depth != depth) continue;
+                if (r.Header.Top >= slotTop - 0.5)
+                {
+                    // 顶端正好压在自己槽位下沿附近（收起钉住行后，它的祖级常常正好落到这个临界位置）：
+                    // 如果这一行上一帧就钉在这里，就继续钉着它 —— 否则会在临界点上“脱钉→再钉”，
+                    // 浮层因链变化整块隐藏/重建，看起来就是闪。它就在原位，副本与真行重合，看不出差别。
+                    if (depth < _stickyVms.Count
+                        && ReferenceEquals(r.Row.DataContext, _stickyVms[depth])
+                        && r.Header.Top <= slotTop + 0.5)
+                        pick = r;
+                    break;                                  // 本行及后面都没被盖住 → 这一级不再往下找
+                }
+                if (!r.Row.HasItems || !r.Row.IsExpanded) continue;
+                pick = r;
+            }
+            if (pick is null) break;                       // 这一级还没到，更深的级更到不了
+            chain.Add(pick.Value);
+            slotTop += pick.Value.Header.Height;
+        }
+
+        double stackH = slotTop;
+        _stickyStackHeight = stackH;
+        double offset = sv.VerticalOffset;
+        double shift = 0;
+        bool haveShift = false;
+
+        if (rows.Count > 0)
+        {
+            // 行对齐（滚动以整行为单位）：把“钉住区下沿”对齐到最接近的某一行顶端，
+            // 于是钉住区下面露出的总是整行，凑不满一屏时缺的那一行永远在窗口最下面。
+            // 滚轮自己也会精确对齐（一格 = 一整行），这里主要兜住布局抖动留下的零头。
+            // 注：收起钉住的行时“把它拉回钉住区下沿”是在 TreeViewItem_Collapsed 里当场做的。
+            double bestTop = double.NaN, bestDist = double.MaxValue;
+            foreach (var r in rows)
+            {
+                double d = Math.Abs(r.Header.Top - stackH);
+                if (d < bestDist) { bestDist = d; bestTop = r.Header.Top; }
+            }
+            if (bestDist > 0.6) { shift = bestTop - stackH; haveShift = true; }
+        }
+
+        if (haveShift)
+        {
+            double target = offset + shift;
+            if (Math.Abs(shift) > 0.01 && target >= 0 && target <= sv.ScrollableHeight)
+            {
+                sv.ScrollToVerticalOffset(target);
+                // 本帧还没重新布局，先把收集到的行整体平移，浮层位置当帧就是对的
+                for (int i = 0; i < rows.Count; i++)
+                    rows[i] = rows[i] with { Header = new Rect(rows[i].Header.X, rows[i].Header.Y - shift, rows[i].Header.Width, rows[i].Header.Height) };
+                offset = target;
+            }
+        }
+        ApplyStickyRows(rows, chain, sv);
+    }
+
+    /// <summary>读组行 VM 的“默认展开”标志（各类组 VM 同名属性，统一入口；非组行返回 null）。</summary>
+    private static bool? GetExpandedFlag(object? vm) => vm switch
+    {
+        EmailNodeViewModel e => e.ExpandedByDefault,
+        CustomerGroupViewModel c => c.ExpandedByDefault,
+        ProductGroupViewModel p => p.ExpandedByDefault,
+        IgnoredGroupViewModel i => i.ExpandedByDefault,
+        _ => null
+    };
+
+    /// <summary>刷新浮层：内容变了才重建行；位置每次都按“顶出”公式重算。</summary>
+    private void ApplyStickyRows(List<StickyRowInfo> rows, List<StickyRowInfo> chain, ScrollViewer sv)
+    {
+        if (chain.Count == 0)
+        {
+            if (_stickyVms.Count > 0)
+            {
+                _stickyVms.Clear();
+                _stickyHeights.Clear();
+                StickyRowsHost.Children.Clear();
+            }
+            StickyHost.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var vms = chain.Select(c => (object?)c.Row.DataContext).ToList();
+        int common = 0;   // 与上一帧一致的前缀：这几个副本连元素都不动（“移除再插回”同样会有一帧空白 → 闪）
+        while (common < vms.Count && common < _stickyVms.Count
+               && ReferenceEquals(vms[common], _stickyVms[common])) common++;
+        if (common < vms.Count || common < _stickyVms.Count)
+        {
+            _stickyVms.Clear();
+            _stickyVms.AddRange(vms);
+            if (StickyRowsHost.Children.Count > common)
+                StickyRowsHost.Children.RemoveRange(common, StickyRowsHost.Children.Count - common);
+            for (int i = common; i < vms.Count; i++)
+            {
+                var (slot, _, row) = GetStickyRow(i);
+                row.DataContext = vms[i];
+                row.Header = vms[i];
+                // 展开状态绑到 VM（不能绑到树里那个容器：虚拟化会把容器回收复用，绑定就串到别的级别上去了）。
+                // 点副本箭头 / 双击副本 → 写回 VM 的 ExpandedByDefault → 下面按 VM 把真实行同步过去。
+                row.SetBinding(TreeViewItem.IsExpandedProperty, new Binding(nameof(EmailNodeViewModel.ExpandedByDefault))
+                {
+                    Source = vms[i],
+                    Mode = BindingMode.TwoWay
+                });
+                StickyRowsHost.Children.Add(slot);
+            }
+        }
+
+        double width = sv.ViewportWidth;
+        double baseX = chain[0].Header.Left;
+        int n = chain.Count;
+
+        // 各槽位高度（= 真实行高）
+        var heights = new double[n];
+        for (int i = 0; i < n; i++) heights[i] = chain[i].Header.Height;
+        _stickyHeights.Clear();
+        _stickyHeights.AddRange(heights);
+
+        // 各级“子树末尾”在视口里的位置：紧随其后的同级（或更外层）行的表头顶；
+        // 找不到（子树还长、后面没有同级内容了）记 +∞，表示这一级不该动。
+        var bounds = new double[n];
+        for (int i = 0; i < n; i++)
+        {
+            int bi = FindBoundaryIndex(rows, chain[i]);
+            bounds[i] = bi < 0 ? double.PositiveInfinity : rows[bi].Header.Top;
+        }
+
+        // 逐级卷出：三级→二级→一级依次上滑，滑出量正好等于自身行高（滑完被槽位裁掉）
+        double[] slides = StickyLayout.ComputeSlides(heights, bounds);
+        double slotTop = 0;
+        for (int i = 0; i < n; i++)
+        {
+            var info = chain[i];
+            double h = heights[i];
+            double slide = slides[i];
+            slotTop = i == 0 ? 0 : slotTop + heights[i - 1];
+
+            var (slot, wrap, row) = GetStickyRow(i);
+            // 副本上点箭头/双击改的是 VM，这里按 VM 找到树里当前那一行并把状态同步过去。
+            // 不能直接用 chain[i].Row：虚拟化会把容器回收复用，那个容器对象可能已经代表别的行了。
+            bool? wantExpanded = GetExpandedFlag(info.Row.DataContext);
+            if (wantExpanded is bool we)
+            {
+                int ri = FindRowIndexByVm(rows, info.Row.DataContext);
+                if (ri >= 0 && rows[ri].Row.IsExpanded != we)
+                    rows[ri].Row.SetCurrentValue(TreeViewItem.IsExpandedProperty, we);
+            }
+            if (Math.Abs(slot.Width - width) > 0.5) slot.Width = width;
+            if (Math.Abs(slot.Height - h) > 0.1) slot.Height = h;
+            if (Math.Abs(wrap.Height - h) > 0.1) wrap.Height = h; // 白底正好盖住本行那一条
+            slot.Margin = new Thickness(Math.Max(0, info.Header.Left - baseX), 0, 0, 0);
+            // 最内层那行下面加一条分隔线，表示“钉住区到此为止”（滑出后线也一起收掉）
+            wrap.BorderThickness = i == n - 1 && slide < h ? new Thickness(0, 0, 0, 1) : new Thickness(0);
+            if (wrap.RenderTransform is not TranslateTransform tt)
+            {
+                tt = new TranslateTransform();
+                wrap.RenderTransform = tt;
+            }
+            tt.Y = -slide;
+            // 选中态要跟着真实行走：钉住行现在会盖住“刚爬到自己槽位”的真实行，只画自己的选中态才不会错位
+            if (row.IsSelected != info.Row.IsSelected) row.IsSelected = info.Row.IsSelected;
+            slot.Visibility = Visibility.Visible;
+        }
+        for (int i = chain.Count; i < _stickyPool.Count; i++)
+            _stickyPool[i].Slot.Visibility = Visibility.Collapsed;
+        StickyHost.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>按 VM 在收集到的行里找序号（容器会被虚拟化回收，所以不能比容器对象）。</summary>
+    private static int FindRowIndexByVm(List<StickyRowInfo> rows, object? vm)
+    {
+        if (vm == null) return -1;
+        for (int i = 0; i < rows.Count; i++)
+            if (ReferenceEquals(rows[i].Row.DataContext, vm)) return i;
+        return -1;
+    }
+
+    /// <summary>
+    /// 本行子树之后第一行（同级或更外层）在 rows 里的序号；没有（本行是最后一段内容）返回 -1。
+    /// 它就是“把本行顶出去”的那一行：它滚到视口顶部时，本行刚好被顶得完全滚出。
+    /// </summary>
+    private static int FindBoundaryIndex(List<StickyRowInfo> rows, StickyRowInfo info)
+    {
+        int start = FindRowIndexByVm(rows, info.Row.DataContext);
+        if (start < 0) return -1;
+        for (int i = start + 1; i < rows.Count; i++)
+            if (rows[i].Depth <= info.Depth) return i;
+        return -1;
+    }
+
+    /// <summary>取（或新建）第 i 个浮层行：槽位（固定高度 + 裁剪）→ 不透明底色包装（随行一起上移）→ 与树中行同款样式的 TreeViewItem。
+    /// 底色必须不透明：树里祖级行的行背景本身是透明的（只有根邮件/悬停/选中才有底色），
+    /// 钉在顶上时下面的邮件会从字缝里透出来形成叠加感。包装跟着行走，所以卷出时空出的那段照旧露出下面的内容。</summary>
+    private (Border Slot, Border Wrap, TreeViewItem Row) GetStickyRow(int i)
+    {
+        while (_stickyPool.Count <= i)
+        {
+            var row = new TreeViewItem
+            {
+                Style = (Style)FindResource("TreeViewItemGuideStyle"),
+                HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Top,
+                Focusable = false, // 浮层行只用于“看”和点选，不参与键盘焦点
+                IsTabStop = false
+            };
+            row.PreviewMouseLeftButtonDown += StickyRow_PreviewMouseLeftButtonDown;
+            // 模板靠 HasItems 决定左侧展开箭头是否显示：挂一个永远收起的占位子项，让副本也有箭头；
+            // 真正的展开状态由下面 ApplyStickyRows 把 IsExpanded 双向绑到真实行，所以点箭头/双击副本都作用到真行。
+            row.Items.Add(new TreeViewItem { Visibility = Visibility.Collapsed });
+            var wrap = new Border
+            {
+                Background = StickyRowBackground, // 不透明：钉住行不能透出下面的滚动内容
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0xD9, 0xD9, 0xD9)),
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                SnapsToDevicePixels = true,
+                Child = row
+            };
+            var slot = new Border
+            {
+                ClipToBounds = true,   // 行上滑时被自己的槽位裁掉
+                Visibility = Visibility.Collapsed,
+                Child = wrap
+            };
+            _stickyPool.Add((slot, wrap, row));
+        }
+        return _stickyPool[i];
+    }
+
+    /// <summary>点浮层行：同步选中对应的邮件/线索（右侧详情与“延迟已读”逻辑），但不滚动树——
+    /// 真实行在视口上方，若把它滚回视野，刚钉住的行就又消失了。</summary>
+    private void StickyRow_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not TreeViewItem row) return;
+        foreach (var (_, _, other) in _stickyPool) other.IsSelected = ReferenceEquals(other, row);
+        if (row.DataContext is EmailNodeViewModel ev) _vm.SelectEmail(ev);
+    }
+
+    /// <summary>按文档顺序收集可见的行、表头矩形与层级深度。返回 true 表示已越过 limit、可以停止。
+    /// 只走到表头在视口顶部以下 limit 像素处为止（更靠下的行永远只会算出 need=0，用不着）；
+    /// 并跳过已隐藏（被虚拟化回收）的容器——它们的坐标是残留值，会把“边界行”算错。</summary>
+    private static bool CollectRows(ItemsControl parent, Visual sv, int depth, double limit, List<StickyRowInfo> rows)
+    {
+        foreach (var item in parent.Items)
+        {
+            if (parent.ItemContainerGenerator.ContainerFromItem(item) is not TreeViewItem tvi) continue;
+            if (tvi.IsVisible && TryGetHeaderRect(tvi, sv, out var r))
+            {
+                rows.Add(new StickyRowInfo(tvi, r, depth));
+                if (r.Top > limit) return true; // 后面的行更靠下，不必再找
+            }
+            if (CollectRows(tvi, sv, depth + 1, limit, rows)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>取某行“表头”（模板里的 Bd Border）相对滚动容器的矩形；未布局完成时返回 false。</summary>
+    private static bool TryGetHeaderRect(TreeViewItem row, Visual ancestor, out Rect rect)
+    {
+        rect = Rect.Empty;
+        if (row.Template?.FindName("Bd", row) is not FrameworkElement header || header.ActualHeight <= 0)
+            return false;
+        try
+        {
+            rect = new Rect(header.TransformToAncestor(ancestor).Transform(new Point(0, 0)), header.RenderSize);
+            return true;
+        }
+        catch
+        {
+            return false; // 尚未连接到可视树
+        }
     }
 
     private void ClearSearch_Click(object sender, RoutedEventArgs e)
@@ -471,7 +951,8 @@ public partial class MainWindow : Window
             await Task.Yield(); // 先让等待光标渲染出来
             // 一次性动作：只显式逐层应用展开状态，不写 _vm.ExpandDepth（不持久化为“当前层次”）
             // 等容器就绪后显式逐层应用展开状态，应用完成后再恢复光标
-            Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+            // 这里刻意不 await（BeginInvoke 无异步等待）：用 _ = 显式丢弃以防后续误加 await
+            _ = Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
             {
                 TreeView.UpdateLayout();
                 Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
@@ -622,26 +1103,49 @@ public partial class MainWindow : Window
         sub.IsEnabled = true; // 手工输入兜底：即使没有候选名称也允许设置
     }
 
+    /// <summary>
+    /// async void 事件处理器的统一兵底：捕获未预期异常 → 写日志 + 状态栏提示。
+    /// 否则异常只能冒到全局 DispatcherUnhandledException，用户既看不到提示也难定位。
+    /// </summary>
+    private async Task RunUiHandlerAsync(string name, Func<Task> action)
+    {
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            App.Log(name, ex);
+            _vm.StatusText = $"操作失败：{ex.Message}";
+        }
+    }
+
     /// <summary>点击候选列表中的名称：直接设置。</summary>
     private async void SetMetaDirect_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not MenuItem mi || mi.Tag is not (List<long> targets, string name, bool isProduct)) return;
-        await ApplyMetaAsync(targets, name, isProduct);
+        await RunUiHandlerAsync("SetMetaDirect", async () =>
+        {
+            if (sender is not MenuItem mi || mi.Tag is not (List<long> targets, string name, bool isProduct)) return;
+            await ApplyMetaAsync(targets, name, isProduct);
+        });
     }
 
     /// <summary>点击“手工输入…”：弹出输入框，用自定义名称设置。</summary>
     private async void SetMetaManual_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not MenuItem mi || mi.Tag is not (List<long> targets, bool isProduct)) return;
-        var win = new TicketManager.Views.MetaInputWindow(isProduct) { Owner = this };
-        if (win.ShowDialog() != true) return;
-        var name = win.InputName.Trim();
-        if (string.IsNullOrEmpty(name))
+        await RunUiHandlerAsync("SetMetaManual", async () =>
         {
-            _vm.StatusText = "未输入名称，已取消设置";
-            return;
-        }
-        await ApplyMetaAsync(targets, name, isProduct);
+            if (sender is not MenuItem mi || mi.Tag is not (List<long> targets, bool isProduct)) return;
+            var win = new TicketManager.Views.MetaInputWindow(isProduct) { Owner = this };
+            if (win.ShowDialog() != true) return;
+            var name = win.InputName.Trim();
+            if (string.IsNullOrEmpty(name))
+            {
+                _vm.StatusText = "未输入名称，已取消设置";
+                return;
+            }
+            await ApplyMetaAsync(targets, name, isProduct);
+        });
     }
 
     /// <summary>把目标线索的产品/客户设置为指定名称（直接设置与手工输入共用）。</summary>
@@ -697,7 +1201,10 @@ public partial class MainWindow : Window
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 "TicketManager", "metaset.log"), $"[{DateTime.Now:HH:mm:ss.fff}] {msg}\n");
         }
-        catch { }
+        catch
+        {
+            // 写日志失败只能忽略：不能再调 App.Log（同样会写文件，失败会递归）
+        }
     }
 
     /// <summary>设置产品/客户后：定位指定根邮件所在线索并滚动选中（复用跳转新邮件的容器就绪机制）。</summary>
@@ -765,33 +1272,19 @@ public partial class MainWindow : Window
         {
             Title = "导出线索为 CSV",
             Filter = "CSV 文件 (*.csv)|*.csv",
-            FileName = $"线索导出_{SanitizeFileName(scopeName)}_{DateTime.Now:yyyyMMdd_HHmmss}.csv"
+            FileName = $"线索导出_{ExportService.SanitizeFileName(scopeName)}_{DateTime.Now:yyyyMMdd_HHmmss}.csv"
         };
         if (dlg.ShowDialog(this) != true) return;
 
         try
         {
-            using (var sw = new StreamWriter(dlg.FileName, false, new UTF8Encoding(true)))
-            {
-                sw.WriteLine("工单号,线索名称,客户,产品,开始时间,最后更新时间,AI状态,AI详情");
-                foreach (var t in threads)
-                {
-                    var row = new[]
-                    {
-                        t.TicketNumber, RootSubject(t), t.Enterprise,
-                        string.IsNullOrWhiteSpace(t.Product) ? "未分类产品" : t.Product,
-                        t.FirstActivity.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss"),
-                        t.LastActivity.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss"),
-                        t.Status, t.StatusSummary
-                    };
-                    sw.WriteLine(string.Join(",", row.Select(CsvEscape)));
-                }
-            }
-            // 文件流已释放（using 块结束）再弹窗，避免 Excel 打开时提示“文件被锁定”
+            // 文件写入交给 ExportService（与 Excel 导出共用表头/取值）；写完后才弹提示
+            ExportService.WriteCsv(threads, dlg.FileName);
             ShowExportComplete(dlg.FileName, threads.Count);
         }
         catch (Exception ex)
         {
+            App.Log("ExportCsv", ex);
             MessageBox.Show(this, $"导出失败：{ex.Message}", "导出 CSV", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
@@ -889,66 +1382,22 @@ public partial class MainWindow : Window
         {
             Title = "导出线索为 Excel",
             Filter = "Excel 文件 (*.xlsx)|*.xlsx",
-            FileName = $"线索导出_{SanitizeFileName(scopeName)}_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx"
+            FileName = $"线索导出_{ExportService.SanitizeFileName(scopeName)}_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx"
         };
         if (dlg.ShowDialog(this) != true) return;
 
         try
         {
-            using var wb = new XLWorkbook();
-            var ws = wb.Worksheets.Add("线索");
-            string[] headers = { "工单号", "线索名称", "客户", "产品", "开始时间", "最后更新时间", "AI状态", "AI详情" };
-            for (int c = 0; c < headers.Length; c++)
-                ws.Cell(1, c + 1).Value = headers[c];
-            var headerRange = ws.Range(1, 1, 1, headers.Length);
-            headerRange.Style.Font.Bold = true;
-            headerRange.Style.Font.FontColor = XLColor.White;
-            headerRange.Style.Fill.BackgroundColor = XLColor.FromHtml("#1F3A5F");
-            headerRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
-
-            int r = 2;
-            foreach (var t in threads)
-            {
-                var values = new[]
-                {
-                    t.TicketNumber, RootSubject(t), t.Enterprise,
-                    string.IsNullOrWhiteSpace(t.Product) ? "未分类产品" : t.Product,
-                    t.FirstActivity.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss"),
-                    t.LastActivity.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss"),
-                    t.Status, t.StatusSummary
-                };
-                for (int c = 0; c < values.Length; c++)
-                    ws.Cell(r, c + 1).Value = values[c];
-                var fill = StatusFillColor(t.Status);
-                if (fill != null)
-                    ws.Range(r, 1, r, headers.Length).Style.Fill.BackgroundColor = XLColor.FromHtml(fill);
-                r++;
-            }
-            ws.Columns().AdjustToContents();
-            ws.Range(1, 1, r - 1, headers.Length).SetAutoFilter(); // 表头自动筛选
-            wb.SaveAs(dlg.FileName);
+            ExportService.WriteExcel(threads, dlg.FileName);
             ShowExportComplete(dlg.FileName, threads.Count);
         }
         catch (Exception ex)
         {
+            App.Log("ExportExcel", ex);
             MessageBox.Show(this, $"导出失败：{ex.Message}", "导出 Excel", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
-    /// <summary>状态 → Excel 行底色（与界面 AI 总结淡色一致）；未知状态不着色。</summary>
-    private static string? StatusFillColor(string status) => status switch
-    {
-        "已解决" => "#E8F5E9",
-        "等待客户回复" => "#FFEBEE",
-        "等待客服回复" => "#FFEBEE",
-        "等待研发回复" => "#E3F2FD",
-        "纳入开发计划" => "#F3E5F5",
-        "合并或拆分为其他工单" => "#F0FDFA",
-        "处理中" => "#ECEFF1",
-        "需升级" => "#FFEBEE",
-        "新建" => "#F5F5F5",
-        _ => null
-    };
 
     /// <summary>导出成功提示框：显示导出条数与路径，可点击“打开文件”直接打开 CSV。</summary>
     private void ShowExportComplete(string file, int count)
@@ -1015,34 +1464,6 @@ public partial class MainWindow : Window
         {
             MessageBox.Show($"无法打开文件：{ex.Message}", "打开文件", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-    }
-
-    /// <summary>线索名称 = 界面节点显示的标题（与 EmailNodeViewModel.Title 一致）：AI 翻译优先，否则剥离标签后的纯主题。</summary>
-    private static string RootSubject(TicketThread t)
-    {
-        var root = t.DisplayRoots.Count > 0 && t.DisplayRoots[0].Email is { } e
-            ? e
-            : t.Emails.OrderBy(x => x.DateSent).FirstOrDefault();
-        if (root == null) return "";
-        if (!string.IsNullOrWhiteSpace(root.AiTitle)) return root.AiTitle;
-        var parsed = TicketManager.Services.SubjectParser.Parse(root.Subject);
-        return parsed != null && !string.IsNullOrWhiteSpace(parsed.Fault)
-            ? parsed.Fault
-            : root.Subject.Trim();
-    }
-
-    /// <summary>CSV 转义：含逗号/引号/换行时用双引号包裹，内部引号翻倍。</summary>
-    private static string CsvEscape(string s)
-    {
-        if (s.IndexOfAny(new[] { ',', '"', '\r', '\n' }) < 0) return s;
-        return "\"" + s.Replace("\"", "\"\"") + "\"";
-    }
-
-    private static string SanitizeFileName(string s)
-    {
-        foreach (var c in Path.GetInvalidFileNameChars())
-            s = s.Replace(c, '_');
-        return string.IsNullOrWhiteSpace(s) ? "全部" : s;
     }
 
     /// <summary>上次跳转的新邮件 Id（用于从其后继续，避免清除 IsNew 后集合缩短导致跳过）。</summary>
@@ -1146,7 +1567,7 @@ public partial class MainWindow : Window
         }));
     }
 
-    /// <summary>执行“跳转新邮件”：跳到下一条新同步的邮件并滚动选中（点击后自动清除其新标记）。</summary>
+    /// <summary>执行“跳转新邮件”：跳到下一条新同步的邮件并滚动选中（选中后延迟 1 秒自动清除其新标记）。</summary>
     private void JumpNewMail()
     {
         var nodes = CollectNewMailNodes();
@@ -1286,8 +1707,11 @@ public partial class MainWindow : Window
 
     private async void RegenerateStatus_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not MenuItem mi || mi.Tag is not EmailNodeViewModel ev) return;
-        await _vm.RegenerateThreadStatusAsync(ev.Email.Id);
+        await RunUiHandlerAsync("RegenerateStatus", async () =>
+        {
+            if (sender is not MenuItem mi || mi.Tag is not EmailNodeViewModel ev) return;
+            await _vm.RegenerateThreadStatusAsync(ev.Email.Id);
+        });
     }
 
     /// <summary>右键“回复此邮件”：打开回复窗口（可选收信人=客服/客户接口人，另一个自动作为抄送）。</summary>
@@ -1366,7 +1790,10 @@ public partial class MainWindow : Window
             var list = await ai.SuggestEnterpriseNamesAsync(cust.Name, relatedDomains);
             if (list != null) suggestions = list;
         }
-        catch { /* AI 失败则无候选 */ }
+        catch (Exception ex)
+        {
+            App.Log("RenameEnterprise.Suggest", ex); // AI 建议失败则无候选（仍可手输），但要留痕
+        }
         finally { Mouse.OverrideCursor = null; }
 
         var box = new TextBox { Text = cust.Name, Margin = new Thickness(0, 8, 0, 0), Padding = new Thickness(4) };
@@ -1566,7 +1993,7 @@ public partial class MainWindow : Window
     /// 客服邮箱 = 关注的客服邮箱，或未关注但符合厂商支持邮箱规则（@前含 support、@后含 manageengine/zohocorp，如 support@manageengine.com）。</summary>
     private static string ResolveSupportEmail(EmailNodeViewModel ev)
     {
-        var support = App.Workflow.Config.MonitoredAddresses;
+        var support = App.Workflow.MonitoredAddresses;
         string? found = null;
         foreach (var email in ev.ThreadOwner.Thread.Emails.OrderBy(x => x.DateSent))
         {

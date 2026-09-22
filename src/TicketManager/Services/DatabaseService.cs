@@ -75,7 +75,9 @@ public class DatabaseService : IDisposable
                 Enterprise TEXT NOT NULL DEFAULT '',
                 FaultDescription TEXT NOT NULL DEFAULT '',
                 IsNew INTEGER NOT NULL DEFAULT 0,
+                Starred INTEGER NOT NULL DEFAULT 0,
                 Ignored INTEGER NOT NULL DEFAULT 0,
+                MetaAnalyzed INTEGER NOT NULL DEFAULT 0,
                 Attachments TEXT NOT NULL DEFAULT '',
                 ZohoFolderId INTEGER NOT NULL DEFAULT 0,
                 InlineImages TEXT NOT NULL DEFAULT ''
@@ -157,6 +159,21 @@ public class DatabaseService : IDisposable
             INSERT INTO Settings ("Key", Value) VALUES (@key, @value)
             ON CONFLICT("Key") DO UPDATE SET Value = @value
             """, new { key, value });
+    }
+
+    /// <summary>一次连接 + 一个事务内写入多条设置（保存配置时避免几十次 Open/Commit 往返）。</summary>
+    public void SetSettings(params (string Key, string Value)[] items)
+    {
+        if (items.Length == 0) return;
+        using var conn = Open();
+        using var tx = conn.BeginTransaction();
+        const string sql = """
+            INSERT INTO Settings ("Key", Value) VALUES (@key, @value)
+            ON CONFLICT("Key") DO UPDATE SET Value = @value
+            """;
+        foreach (var (key, value) in items)
+            conn.Execute(sql, new { key, value = value ?? "" }, tx);
+        tx.Commit();
     }
 
     public uint GetLastUid(string folder)
@@ -282,6 +299,14 @@ public class DatabaseService : IDisposable
         using var conn = Open();
         var rows = conn.Query("SELECT * FROM Emails").ToList();
         return rows.Select(MapEmail).ToList();
+    }
+
+    /// <summary>按 Id 取单封邮件（含正文）。附件/内嵌图片按需下载时用，避免为找一封邮件拉取整张表。</summary>
+    public EmailMessage? GetEmailById(long id)
+    {
+        using var conn = Open();
+        var row = conn.QueryFirstOrDefault("SELECT * FROM Emails WHERE Id = @id", new { id });
+        return row == null ? null : MapEmail(row);
     }
 
     /// <summary>只加载元数据列（不含 BodyText/Translation/AiTitle/ContentHash 等大字段）。
@@ -478,7 +503,8 @@ public class DatabaseService : IDisposable
     /// <summary>
     /// 清空每个线程首封邮件的 AI 标题：中文主题的首封保留原主题（清空 AI 标题）；
     /// 英文主题的首封保留 AI 翻译标题（不在此清空）。
-    /// 一次查询取出首封 (Id, Subject) 后在内存判断，再批量更新，避免原先逐封 SELECT+UPDATE 的 N+1 往返。
+    /// 一次查询取出首封 (Id, Subject) 后在内存判断，再批量更新，避免原先逐封 SELECT+UPDATE 的 N+1 往返；
+    /// UPDATE 带 AiTitle <> '' 条件：已为空的行不再被改写（避免“加载即写库”在 WAL 里持续堆写入）。
     /// </summary>
     public void ClearFirstEmailTitles()
     {
@@ -498,7 +524,7 @@ public class DatabaseService : IDisposable
             .Select(r => (long)r.Id)
             .ToList();
         foreach (var chunk in toClear.Chunk(500))
-            conn.Execute("UPDATE Emails SET AiTitle='' WHERE Id IN @ids", new { ids = chunk });
+            conn.Execute("UPDATE Emails SET AiTitle='' WHERE Id IN @ids AND AiTitle <> ''", new { ids = chunk });
     }
 
     // ================= Threads =================
@@ -513,6 +539,13 @@ public class DatabaseService : IDisposable
         // 键：有工单号用“t:工单号”；无工单号的线程（自动回复/通知等）用“e:根邮件 Email Id”（邮件 Id 在 Upsert 中稳定，
         // 重建后仍可对上）——否则无工单号线程的手工/AI 状态每次重建都会被抹掉。
         var old = new Dictionary<string, (string Status, string Summary, string Reason)>(StringComparer.OrdinalIgnoreCase);
+        // 线程 → 根邮件（每线程最早一封）：一次性查出。原先对每个无工单号线程单独 SELECT 一次（N+1）。
+        var rootByThread = new Dictionary<long, long>();
+        foreach (var r in conn.Query("SELECT ThreadId, Id FROM Emails WHERE ThreadId > 0 ORDER BY DateSent ASC, Id ASC"))
+        {
+            var tid = (long)r.ThreadId;
+            if (!rootByThread.ContainsKey(tid)) rootByThread[tid] = (long)r.Id;
+        }
         foreach (var r in conn.Query("SELECT Id, TicketNumber, Status, StatusSummary, StatusReason FROM Threads"))
         {
             var ticket = ((string)r.TicketNumber).Trim();
@@ -523,10 +556,7 @@ public class DatabaseService : IDisposable
             }
             else
             {
-                var rootId = conn.ExecuteScalar<long?>(
-                    "SELECT Id FROM Emails WHERE ThreadId = @tid ORDER BY DateSent ASC, Id ASC LIMIT 1",
-                    new { tid = (long)r.Id });
-                if (rootId is not long rid || rid <= 0) continue;
+                if (!rootByThread.TryGetValue((long)r.Id, out var rid) || rid <= 0) continue;
                 key = "e:" + rid;
             }
             old[key] = ((string)r.Status, (string)r.StatusSummary, (string)r.StatusReason);
@@ -544,7 +574,7 @@ public class DatabaseService : IDisposable
             }
             else
             {
-                var rootId = t.Emails.OrderBy(e => e.DateSent).FirstOrDefault()?.Id ?? 0;
+                var rootId = t.Emails.OrderBy(e => e.DateSent).ThenBy(e => e.Id).FirstOrDefault()?.Id ?? 0;
                 key = rootId > 0 ? "e:" + rootId : "";
             }
             (string Status, string Summary, string Reason) prev = default;

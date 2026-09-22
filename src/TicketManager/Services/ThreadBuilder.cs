@@ -27,12 +27,15 @@ public class ThreadBuilder
                 index[e.MessageId] = e;
 
         // 第一步：为每封邮件确定所属工单（含 References/后代继承、英文自动回复主题 Ticket ID）
+        // 后代工单号映射先整体算一次（O(N)）；若对每封无工单号的邮件都扫一遍全表并逐级上溯，整体是 O(N²)
+        var descendantTickets = ResolveDescendantTickets(allEmails, index);
         var ticketOf = new Dictionary<long, string>();
         foreach (var e in allEmails)
         {
             var ticket = !string.IsNullOrEmpty(e.TicketNumber)
                 ? e.TicketNumber
-                : ParseAckTicketId(e.Subject) ?? ResolveTicket(e, index) ?? ResolveTicketFromDescendants(e, allEmails, index);
+                : ParseAckTicketId(e.Subject) ?? ResolveTicket(e, index)
+                  ?? (descendantTickets.TryGetValue(e.Id, out var dt) ? dt : null);
             ticketOf[e.Id] = ticket ?? "";
         }
 
@@ -40,7 +43,8 @@ public class ThreadBuilder
         // REST 拉取的邮件没有 MessageId/In-Reply-To/References（全空），
         // 报障邮件（发件箱）无工单号无法靠引用继承，但 Zoho 官方 threadId 天然标识同一对话。
         var threadToTicket = new Dictionary<long, string>();
-        var threadCounts = new Dictionary<long, Dictionary<string, int>>(/* ticket 计数 */);
+        // 每个 Zoho 线程内各工单号的出现次数，取最多者作为该线程的工单号
+        var threadCounts = new Dictionary<long, Dictionary<string, int>>();
         foreach (var e in allEmails)
         {
             if (e.ZohoThreadId is not long zid || zid <= 0) continue;
@@ -189,20 +193,23 @@ public class ThreadBuilder
 
         foreach (var e in emails)
         {
-            EmailMessage? parent = null;
-            if (!string.IsNullOrEmpty(e.InReplyTo) && index.TryGetValue(e.InReplyTo, out var irt))
-                parent = irt;
-            else
-            {
-                foreach (var r in SplitRefs(e.References).Reverse())
-                    if (index.TryGetValue(r, out var rf)) { parent = rf; break; }
-            }
+            var parent = FindParent(e, index);
             if (parent != null && !ReferenceEquals(parent, e))
             {
                 e.Parent = parent;
                 parent.Children.Add(e);
             }
         }
+    }
+
+    /// <summary>按 In-Reply-To（其次 References 中最靠后的命中项）在索引里找父邮件；找不到返回 null。</summary>
+    private static EmailMessage? FindParent(EmailMessage e, Dictionary<string, EmailMessage> index)
+    {
+        if (!string.IsNullOrEmpty(e.InReplyTo) && index.TryGetValue(e.InReplyTo, out var irt))
+            return irt;
+        foreach (var r in SplitRefs(e.References).Reverse())
+            if (index.TryGetValue(r, out var rf)) return rf;
+        return null;
     }
 
     /// <summary>
@@ -275,61 +282,74 @@ public class ThreadBuilder
         while (cur != null && seen.Add(cur.Id))
         {
             if (!string.IsNullOrEmpty(cur.TicketNumber)) return cur.TicketNumber;
-            EmailMessage? next = null;
-            if (!string.IsNullOrEmpty(cur.InReplyTo) && index.TryGetValue(cur.InReplyTo, out var irt))
-                next = irt;
-            else
-            {
-                foreach (var r in SplitRefs(cur.References).Reverse())
-                    if (index.TryGetValue(r, out var rf)) { next = rf; break; }
-            }
-            cur = next;
+            cur = FindParent(cur, index);
         }
         return null;
     }
 
     /// <summary>
-    /// 无工单号的邮件从其后代回复中继承工单号：报障邮件原文（常在发件箱）没有工单号，
-    /// 客服回复时才会把工单号加到标题开头，因此从引用该邮件的后代里取工单号。
+    /// 预先算出每封邮件“最早带工单号的后代”并缓存：报障邮件原文（常在发件箱）没有工单号，
+    /// 客服回复时才会把工单号加到标题开头，所以要从未回复中继承。
+    /// 做法：先建一次父子索引（一片森林），再对每棵树迭代式后序遍历——
+    /// best[e] = e 的所有严格后代中“带工单号且时间最早”的那封。整体 O(N)。
+    /// （原实现对每封无主邮件都线性扫全表并用逐级上溯判断是否为后代，整体 O(N²)，库大了就卡。）
     /// </summary>
-    private static string? ResolveTicketFromDescendants(
-        EmailMessage e, List<EmailMessage> allEmails, Dictionary<string, EmailMessage> index)
+    private static Dictionary<long, string> ResolveDescendantTickets(
+        List<EmailMessage> allEmails, Dictionary<string, EmailMessage> index)
     {
-        if (string.IsNullOrEmpty(e.MessageId)) return null;
-        string? best = null;
-        DateTimeOffset? bestDate = null;
-        foreach (var d in allEmails)
+        var parentOf = new Dictionary<long, EmailMessage>();
+        foreach (var e in allEmails)
         {
-            if (string.IsNullOrEmpty(d.TicketNumber) || ReferenceEquals(d, e)) continue;
-            if (!IsDescendantOf(d, e, index)) continue;
-            if (bestDate == null || d.DateSent < bestDate)
-            {
-                bestDate = d.DateSent;
-                best = d.TicketNumber;
-            }
+            if (parentOf.ContainsKey(e.Id)) continue;
+            var p = FindParent(e, index);
+            if (p != null && !ReferenceEquals(p, e)) parentOf[e.Id] = p;
         }
-        return best;
-    }
+        var childrenOf = new Dictionary<long, List<EmailMessage>>();
+        foreach (var e in allEmails)
+        {
+            if (!parentOf.TryGetValue(e.Id, out var p)) continue;
+            if (!childrenOf.TryGetValue(p.Id, out var list)) { list = new List<EmailMessage>(); childrenOf[p.Id] = list; }
+            list.Add(e);
+        }
 
-    /// <summary>d 是否以 e 为祖先（沿 InReplyTo/References 向上走能否到达 e）。</summary>
-    private static bool IsDescendantOf(EmailMessage d, EmailMessage e, Dictionary<string, EmailMessage> index)
-    {
-        var seen = new HashSet<long>();
-        var cur = d;
-        while (cur != null && seen.Add(cur.Id))
+        var best = new Dictionary<long, EmailMessage?>(); // 邮件 Id → 其后代中最早的带工单号邮件
+        var visited = new HashSet<long>();                 // 引用成环时兜底，避免死循环
+        foreach (var root in allEmails.Where(e => !parentOf.ContainsKey(e.Id)))
         {
-            if (ReferenceEquals(cur, e)) return true;
-            EmailMessage? next = null;
-            if (!string.IsNullOrEmpty(cur.InReplyTo) && index.TryGetValue(cur.InReplyTo, out var irt))
-                next = irt;
-            else
+            var stack = new Stack<(EmailMessage Node, bool Expanded)>();
+            stack.Push((root, false));
+            while (stack.Count > 0)
             {
-                foreach (var r in SplitRefs(cur.References).Reverse())
-                    if (index.TryGetValue(r, out var rf)) { next = rf; break; }
+                var (node, expanded) = stack.Pop();
+                if (!expanded)
+                {
+                    if (!visited.Add(node.Id)) continue;
+                    stack.Push((node, true));
+                    if (childrenOf.TryGetValue(node.Id, out var kids))
+                        foreach (var k in kids) stack.Push((k, false));
+                    continue;
+                }
+                EmailMessage? pick = null;
+                if (childrenOf.TryGetValue(node.Id, out var children))
+                {
+                    foreach (var c in children)
+                    {
+                        // 候选一：子节点自身（带工单号）；候选二：子节点后代中最早的带工单号邮件
+                        if (!string.IsNullOrEmpty(c.TicketNumber) && (pick == null || c.DateSent < pick.DateSent))
+                            pick = c;
+                        if (best.TryGetValue(c.Id, out var bc) && bc != null && (pick == null || bc.DateSent < pick.DateSent))
+                            pick = bc;
+                    }
+                }
+                best[node.Id] = pick;
             }
-            cur = next;
         }
-        return false;
+
+        var result = new Dictionary<long, string>();
+        foreach (var e in allEmails)
+            if (best.TryGetValue(e.Id, out var b) && b != null && !string.IsNullOrEmpty(b.TicketNumber))
+                result[e.Id] = b.TicketNumber;
+        return result;
     }
 
     private static IEnumerable<string> SplitRefs(string references) =>

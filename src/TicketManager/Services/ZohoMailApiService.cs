@@ -83,6 +83,12 @@ public class ZohoMailApiService
         !string.IsNullOrEmpty(_config.ZohoClientSecret) &&
         !string.IsNullOrEmpty(_config.ZohoRefreshToken);
 
+    /// <summary>
+    /// 最近一次调用失败的具体原因（HTTP 状态码 + 响应片段 / OAuth 错误），供上层提示与排查。
+    /// 原先失败一律返回 null，调用方分不清 401 无权限、429 限流、404 还是网络问题。
+    /// </summary>
+    public string? LastError { get; private set; }
+
     /// <summary>Zoho sentDateInGMT 实际是“账号时区墙钟”，与真实 UTC（receivedTime）相差固定毫秒数；此为推导出的偏移。</summary>
     private long _sentOffsetMs;
 
@@ -106,8 +112,13 @@ public class ZohoMailApiService
                     minDiff = Math.Min(minDiff, s - r);
             }
             if (minDiff != long.MaxValue) _sentOffsetMs = minDiff;
+            LastError = null;
         }
-        catch { /* 获取失败则不修正 */ }
+        catch (Exception ex)
+        {
+            // 推导失败不影响同步，但要留痕（便于排查“发送时间偏差”类问题）
+            App.Log("Zoho.LoadTimeZone", ex);
+        }
     }
 
     /// <summary>获取（必要时用 refresh token 刷新）Access Token；失败返回 null。</summary>
@@ -124,23 +135,43 @@ public class ZohoMailApiService
         using var resp = await _http.PostAsync(url, null, ct);
         var json = await resp.Content.ReadAsStringAsync(ct);
         using var doc = JsonDocument.Parse(json);
-        if (!doc.RootElement.TryGetProperty("access_token", out var t)) return null;
+        if (!doc.RootElement.TryGetProperty("access_token", out var t))
+        {
+            // OAuth 拒绝时不静默：把 error / error_description 留给上层提示
+            var err = GetPropStr(doc.RootElement, "error");
+            var desc = GetPropStr(doc.RootElement, "error_description");
+            LastError = $"获取 Access Token 失败（HTTP {(int)resp.StatusCode}）：{err} {desc}".Trim();
+            App.Log("Zoho.Auth", new Exception(LastError));
+            return null;
+        }
         _accessToken = t.GetString();
         var exp = doc.RootElement.TryGetProperty("expires_in", out var e) && e.TryGetInt32(out var v) ? v : 3600;
         _accessTokenExpiry = DateTime.UtcNow.AddSeconds(exp);
+        LastError = null;
         return _accessToken;
     }
 
-    /// <summary>发起带认证的 GET，返回响应 data 节点；失败返回 null。</summary>
+    /// <summary>发起带认证的 GET，返回响应 data 节点；失败返回 null（原因见 <see cref="LastError"/>）。</summary>
     private async Task<JsonElement?> GetJsonAsync(string path, CancellationToken ct)
     {
         var token = await GetAccessTokenAsync(ct);
-        if (string.IsNullOrEmpty(token)) return null;
+        if (string.IsNullOrEmpty(token))
+        {
+            LastError ??= "无法获取 Zoho Access Token（请检查 Client ID / Secret / Refresh Token）";
+            return null;
+        }
         var req = new HttpRequestMessage(HttpMethod.Get, ApiBase + path);
         req.Headers.Authorization = new AuthenticationHeaderValue("Zoho-oauthtoken", token);
         using var resp = await _http.SendAsync(req, ct);
-        if (!resp.IsSuccessStatusCode) return null;
         var json = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode)
+        {
+            // 带上状态码与响应片段：401=scope/授权问题，429=限流，404=资源不存在（可据此区分重试策略）
+            LastError = $"HTTP {(int)resp.StatusCode} {resp.StatusCode}（GET {path}）：{Truncate(json, 200)}";
+            App.Log("Zoho.Get", new Exception(LastError));
+            return null;
+        }
+        LastError = null;
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement.Clone();
         return root.TryGetProperty("data", out var data) ? data : root;
@@ -292,13 +323,23 @@ public class ZohoMailApiService
                 using var doc = JsonDocument.Parse(json);
                 if (doc.RootElement.TryGetProperty("status", out var st) &&
                     st.TryGetProperty("code", out var code) && code.GetInt32() == 200)
+                {
+                    LastError = null;
                     return (true, null);
+                }
                 var desc = st.TryGetProperty("description", out var d) ? d.GetString() : "";
-                return (false, string.IsNullOrEmpty(desc) ? Truncate(json) : desc);
+                LastError = string.IsNullOrEmpty(desc) ? Truncate(json) : desc;
+                return (false, LastError);
             }
-            catch { return (false, "发送失败（响应解析错误）：" + Truncate(json)); }
+            catch (Exception ex)
+            {
+                LastError = "发送失败（响应解析错误）：" + Truncate(json);
+                App.Log("Zoho.SendParse", ex);
+                return (false, LastError);
+            }
         }
-        return (false, $"发送失败（HTTP {(int)resp.StatusCode}）：{Truncate(json)}");
+        LastError = $"发送失败（HTTP {(int)resp.StatusCode}）：{Truncate(json)}";
+        return (false, LastError);
     }
 
     /// <summary>上传附件到 Zoho 文件存储（POST /accounts/{id}/messages/attachments，multipart，字段名 attach）。
@@ -332,7 +373,12 @@ public class ZohoMailApiService
         req.Headers.Authorization = new AuthenticationHeaderValue("Zoho-oauthtoken", token);
         using var resp = await _http.SendAsync(req, ct);
         var json = await resp.Content.ReadAsStringAsync(ct);
-        if (!resp.IsSuccessStatusCode) return result;
+        if (!resp.IsSuccessStatusCode)
+        {
+            LastError = $"附件上传失败（HTTP {(int)resp.StatusCode}）：{Truncate(json, 200)}";
+            App.Log("Zoho.UploadAttachment", new Exception(LastError));
+            return result;
+        }
         try
         {
             using var doc = JsonDocument.Parse(json);
@@ -343,7 +389,10 @@ public class ZohoMailApiService
             }
             else AddAttachmentMeta(result, data);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            App.Log("Zoho.UploadAttachmentParse", ex); // 解析失败：上传可能成功但拿不到元数据，需留痕
+        }
         return result;
     }
 

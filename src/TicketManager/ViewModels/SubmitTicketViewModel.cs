@@ -160,6 +160,10 @@ public class SubmitTicketViewModel : ViewModelBase
         SignatureNames = _signatures.Select(s => s.Name).ToList();
         SelectedSignature = SignatureNames.FirstOrDefault() ?? "";
         SendCommand = new RelayCommand(async _ => await SendAsync(), _ => CanSend);
+
+        // 状态一变就立即让“发送”按钮重查可用性（同 ReplyTicketViewModel：
+        // RequerySuggested 只在用户输入事件后才重查，异步发送结束/恢复后按钮会保持旧状态）
+        PropertyChanged += (_, _) => CommandManager.InvalidateRequerySuggested();
     }
 
     private bool CanSend =>
@@ -175,6 +179,40 @@ public class SubmitTicketViewModel : ViewModelBase
         Contacts.Clear();
         foreach (var c in list) Contacts.Add(c);
         SelectedContact = Contacts.Contains(prev) ? prev : (Contacts.FirstOrDefault() ?? "");
+    }
+
+    /// <summary>把当前内容导出为草稿快照（“存草稿”用）。</summary>
+    public EmailDraft ToDraft() => new()
+    {
+        Kind = "submit",
+        Title = string.IsNullOrWhiteSpace(Customer) ? Fault : $"{Customer} / {Fault}",
+        To = SelectedRecipient ?? "",
+        Cc = CcEmails ?? "",
+        Subject = SubjectPreview,
+        Product = SelectedProduct ?? "",
+        Customer = Customer ?? "",
+        Contact = SelectedContact ?? "",
+        Fault = Fault ?? "",
+        Body = Body ?? "",
+        Signature = SelectedSignature ?? "",
+        Attachments = Attachments.ToList()
+    };
+
+    /// <summary>载入草稿内容（产品/客户/接口人/收件人/抄送/故障/正文/签名/附件）。</summary>
+    public void LoadDraft(EmailDraft d)
+    {
+        if (!string.IsNullOrWhiteSpace(d.Product)) SelectedProduct = d.Product;
+        if (!string.IsNullOrWhiteSpace(d.Customer)) { Customer = d.Customer; LoadContacts(); }
+        if (!string.IsNullOrWhiteSpace(d.Contact)) SelectedContact = d.Contact;
+        if (!string.IsNullOrWhiteSpace(d.To)) SelectedRecipient = d.To;
+        CcEmails = d.Cc ?? "";
+        Fault = d.Fault ?? "";
+        Body = d.Body ?? "";
+        if (!string.IsNullOrWhiteSpace(d.Signature)) SelectedSignature = d.Signature;
+        Attachments.Clear();
+        foreach (var a in d.Attachments.Where(a => !string.IsNullOrWhiteSpace(a))) Attachments.Add(a);
+        OnPropertyChanged(nameof(AttachmentSummary));
+        OnPropertyChanged(nameof(SubjectPreview));
     }
 
     private async Task SendAsync()

@@ -502,7 +502,8 @@ public class DatabaseService : IDisposable
 
     /// <summary>
     /// 清空每个线程首封邮件的 AI 标题：中文主题的首封保留原主题（清空 AI 标题）；
-    /// 英文主题的首封保留 AI 翻译标题（不在此清空）。
+    /// 英文主题的首封保留 AI 翻译标题（不在此清空）；「工单受理/关闭通知」类首封也不清空 ——
+    /// 它本身不是标题，它的 AiTitle 是代码/ AI 从线程里提炼出来的真实标题，清了就白干。
     /// 一次查询取出首封 (Id, Subject) 后在内存判断，再批量更新，避免原先逐封 SELECT+UPDATE 的 N+1 往返；
     /// UPDATE 带 AiTitle <> '' 条件：已为空的行不再被改写（避免“加载即写库”在 WAL 里持续堆写入）。
     /// </summary>
@@ -520,11 +521,23 @@ public class DatabaseService : IDisposable
               )
             """).ToList();
         var toClear = firsts
-            .Where(r => { var s = (string)r.Subject; return !string.IsNullOrEmpty(s) && SubjectParser.ContainsCjk(s); })
+            .Where(r =>
+            {
+                var s = (string)r.Subject;
+                return !string.IsNullOrEmpty(s) && SubjectParser.ContainsCjk(s) && !SubjectParser.IsAutoNotice(s);
+            })
             .Select(r => (long)r.Id)
             .ToList();
         foreach (var chunk in toClear.Chunk(500))
             conn.Execute("UPDATE Emails SET AiTitle='' WHERE Id IN @ids AND AiTitle <> ''", new { ids = chunk });
+    }
+
+    /// <summary>取某线程的全部邮件（按时间）。给“首封只是回执”的线索找真实标题用。</summary>
+    public List<EmailMessage> LoadEmailsByThread(long threadId)
+    {
+        using var conn = Open();
+        return conn.Query("SELECT * FROM Emails WHERE ThreadId = @id ORDER BY DateSent, Id", new { id = threadId })
+                   .Select(MapEmail).ToList();
     }
 
     // ================= Threads =================

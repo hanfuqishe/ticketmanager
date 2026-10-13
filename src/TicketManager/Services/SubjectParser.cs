@@ -163,4 +163,67 @@ public static class SubjectParser
             if (ch >= 0x4E00 && ch <= 0x9FFF) return true;
         return false;
     }
+
+    // ===== 自动通知（受理/关闭/满意度…）=====
+    // 这类邮件是系统回执，不含真实故障现象，**不是线索标题**。
+    // 典型场景：北京同事代为提单，我这边收到的首封就是「我们已收到您的工单，将很快为您处理」，
+    // 直接拿它做标题就看不出这单到底在问什么。
+
+    private static readonly Regex[] NoticeRegexes =
+    {
+        new(@"^(我们|我方)?(已经|已)?(收到|受理)(您|你)的?(工单|问题|请求|报障|邮件|来信)", RegexOptions.Compiled),
+        new(@"^(我们|我方)?(已经|已)为您(登记|创建|建立|提交)了?(工单|请求)", RegexOptions.Compiled),
+        new(@"^(您|你)的?工单(已经|已|被)?(创建|建立|受理|关闭|解决|完成|开启)", RegexOptions.Compiled),
+        new(@"^(your\s+)?(ticket|request|case)\s+(has\s+been|was|is)\s+(created|received|logged|opened|closed|resolved|updated)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new(@"^(we\s+have\s+received\s+your|thank\s+you\s+for\s+contacting|this\s+is\s+an?\s+automated)",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled),
+    };
+
+    /// <summary>是否“工单受理/关闭”类自动通知的主题（回执）。它不是线索标题。</summary>
+    public static bool IsAutoNotice(string? subject)
+    {
+        if (string.IsNullOrWhiteSpace(subject)) return false;
+        // Parse 已剥掉 回复前缀 / 工单号 / [产品][企业] 标签；不可剥（返回 null）就用原主题
+        var s = (Parse(subject)?.Fault ?? subject).Trim().TrimStart('，', ',', '。', '.', '、', '；', ';', '：', ':', ' ');
+        if (s.Length == 0) return false;
+        foreach (var r in NoticeRegexes)
+            if (r.IsMatch(s)) return true;
+        return false;
+    }
+
+    private static readonly Regex[] NotifiedTitleRegexes =
+    {
+        // 卓豪 CN：「我们已经为您登记了工单：“…”， ID为[307425]。」
+        new(@"为您(登记|创建|建立)了?工单[：:]\s*[“""「]?(?<title>.+?)[”""」]?\s*[,，]\s*ID\s*为", RegexOptions.Compiled),
+        new(@"(登记|创建|建立)了?工单[：:]\s*[“""「](?<title>.+?)[”""」]", RegexOptions.Compiled),
+        // 英文：「Your request titled “Software Application Request for workbuddy” has been successfully registered」
+        new(@"(ticket|request|case|issue)\s+titled\s*[“""「]?(?<title>.+?)[”""」]?(?:\s+(?:has|was|is)\b|[\r\n.,])",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        // 其它厂商常见写法：工单主题：xxx / Ticket Subject: xxx
+        new(@"(工单主题|工单标题|ticket\s+(subject|title))\s*[：:]\s*(?<title>.+)", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+    };
+
+    /// <summary>从“工单受理通知”正文里抠出它引用的工单标题（拿不到返回空串）。例：
+    /// 「我们已经为您登记了工单：“[旺旺集团][新功能]如何全选“所有办公室””， ID为[307425]。」→ <c>[旺旺集团][新功能]如何全选“所有办公室”</c>。</summary>
+    public static string ExtractNotifiedTitle(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return "";
+        foreach (var r in NotifiedTitleRegexes)
+        {
+            var m = r.Match(body);
+            if (!m.Success) continue;
+            var t = m.Groups["title"].Value.Trim().Trim('“', '”', '"', '「', '」', '《', '》', ' ');
+            if (t.Length > 0) return t;
+        }
+        return "";
+    }
+
+    /// <summary>通知类邮件引用的工单标题 → 展示用标题：剥掉 [产品][企业]/工单号 等标签，剥不出东西就用原文。</summary>
+    public static string NotifiedTitleToDisplay(string quoted)
+    {
+        if (string.IsNullOrWhiteSpace(quoted)) return "";
+        var fault = Parse(quoted)?.Fault;
+        return string.IsNullOrWhiteSpace(fault) ? quoted.Trim() : fault.Trim();
+    }
 }

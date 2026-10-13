@@ -34,6 +34,14 @@
     MainWindow CS4014（BeginInvoke 未等待改为显式丢弃）。
 - ✅ 导出逻辑抽到 Services/ExportService.cs（CSV/Excel 共用表头与行取值），主窗口相应瘦身。
 
+- ✅ 线索标题：首封若是“工单受理/关闭通知”（同事代提单时我这边收到的第一封就是回执），它不含标题信息
+    → 标题改从线程里取：① 同线程第一封“非通知”邮件的主题；② 通知正文里引用的工单标题
+    （卓豪中文回执写「我们已经为您登记了工单：“[旺旺集团][新功能]如何全选“所有办公室””」，
+    英文写「Your request titled “… ” has been registered」）。两条都拿不到才让 AI 读正文提炼。
+    加载时在内存里定（不写库、不调 AI），落库与 AI 兑底放在同步的标题生成阶段。
+    判据是 `SubjectParser.IsAutoNotice`（全库扫过：只命中 3 种回执/关闭话术，真标题零误判）；
+    回归探测 `tools/NoticeProbe`（跑真实库，产物 noticeprobe.txt）。`ClearFirstEmailTitles` 不再清通知首封的 AiTitle。
+
 ### 交互/视觉修复（本轮）
 - ✅ 取消工单后列表不再“复活”：MergeThreads 记录 removedByFilter（过滤隐藏的线索不再被 _threads 旧数据补回）。
 - ✅ 选中新邮件后延迟 1 秒才置为已读（快速划过不误标）；展开线索自动选中其中第一封新邮件（点三角与双击都生效）。

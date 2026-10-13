@@ -1453,7 +1453,35 @@ public class WorkflowService
             if (emailsByThread.TryGetValue(t.Id, out var list)) t.Emails = list;
             else t.Emails = new List<EmailMessage>();
         }
+        ApplyNoticeTitles(threads);   // 首封只是“受理通知”的线索（同事代提单）：标题改成真实标题
         return threads;
+    }
+
+    /// <summary>把“首封只是自动通知”的线索标题改成真实标题。只改内存（不写库、不调 AI）：
+    /// 加载是同步路径，写库反而造成“每次加载都写一遍”；需要落库/需要 AI 兑底的在同步的标题生成阶段做。</summary>
+    private static void ApplyNoticeTitles(List<TicketThread> threads)
+    {
+        foreach (var t in threads)
+        {
+            var first = t.Emails.Count > 0 ? t.Emails[0] : null;
+            if (first == null || !SubjectParser.IsAutoNotice(first.Subject)) continue;
+            var title = ResolveNoticeTitle(t.Emails, first);
+            if (title.Length > 0) first.AiTitle = title;
+        }
+    }
+
+    /// <summary>通知类首封的真实标题：① 线程里第一封“非通知”邮件的主题（往往就是工单标题）；② 通知正文里引用的工单标题。
+    /// 都拿不到返回空串（线程里只有回执 —— 等后续邮件来了再定）。</summary>
+    public static string ResolveNoticeTitle(IReadOnlyList<EmailMessage> threadEmails, EmailMessage notice)
+    {
+        foreach (var e in threadEmails)
+        {
+            if (ReferenceEquals(e, notice) || SubjectParser.IsAutoNotice(e.Subject)) continue;
+            var fault = SubjectParser.Parse(e.Subject)?.Fault;
+            if (!string.IsNullOrWhiteSpace(fault)) return fault.Trim();
+        }
+        var quoted = SubjectParser.ExtractNotifiedTitle(notice.BodyText);
+        return quoted.Length == 0 ? "" : SubjectParser.NotifiedTitleToDisplay(quoted);
     }
 
     private async Task GenerateTitlesAsync(IProgress<string>? progress, CancellationToken ct)
@@ -1462,17 +1490,39 @@ public class WorkflowService
         var pending = _db.GetEmailsPendingTitle();
         if (pending.Count == 0) return;
         var firstIds = _db.GetFirstEmailIdsPerThread();
-        // 非首封：AI 提炼标题；首封：仅当主题为英文时 AI 翻译成中文（中文首封保留原主题）
-        var toTitle = pending.Where(e =>
-            !firstIds.Contains(e.Id) ||
-            (!string.IsNullOrEmpty(e.Subject) && !SubjectParser.ContainsCjk(e.Subject))).ToList();
+        // 非首封：AI 提炼标题；首封：英文主题 → AI 翻译成中文，其余中文主题保留原主题。
+        // 例外：首封是“工单受理/关闭通知”时它没有标题信息（北京同事代为提单，我这边收到的第一封就是回执），
+        // 要按下面 ResolveNoticeTitle 的规则重新定标题，认不出的通知才让 AI 读正文提炼。
+        var noticeFirsts = new HashSet<long>();
+        var toTitle = new List<EmailMessage>();
+        foreach (var e in pending)
+        {
+            if (!firstIds.Contains(e.Id))
+            {
+                toTitle.Add(e);   // 非首封：AI 提炼标题
+                continue;
+            }
+            if (SubjectParser.IsAutoNotice(e.Subject)) { toTitle.Add(e); noticeFirsts.Add(e.Id); }
+            else if (!string.IsNullOrEmpty(e.Subject) && !SubjectParser.ContainsCjk(e.Subject)) toTitle.Add(e);   // 英文首封：翻译成中文
+        }
         if (toTitle.Count == 0) return;
+
+        // 通知类首封先按规则定标题（借用同线程邮件的主题 / 通知正文里引用的标题），拿得到就不用调 AI
+        var noticeTitles = new Dictionary<long, string>();
+        foreach (var e in toTitle.Where(x => noticeFirsts.Contains(x.Id)))
+        {
+            var title = ResolveNoticeTitle(_db.LoadEmailsByThread(e.ThreadId), e);
+            if (title.Length > 0) noticeTitles[e.Id] = title;
+        }
+
         using var ai = new DeepSeekService(_config);
         int done = 0;
         var tasks = toTitle.Select(async e =>
         {
             ct.ThrowIfCancellationRequested();
-            var title = await ai.SummarizeTitleAsync(e);
+            string? title = noticeTitles.TryGetValue(e.Id, out var nt)
+                ? nt                                   // 通知类首封：规则定出来的真实标题
+                : await ai.SummarizeTitleAsync(e);     // 其余（含认不出的通知）：AI 读这封邮件提炼
             if (!string.IsNullOrWhiteSpace(title))
                 _db.UpdateAiTitle(e.Id, title.Trim().Trim('"', '「', '」'));
             var d = Interlocked.Increment(ref done);

@@ -1989,19 +1989,28 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>线索的客服邮箱：取线索邮件中最后出现的客服邮箱（发件/收件/抄送都算）。
-    /// 客服邮箱 = 关注的客服邮箱，或未关注但符合厂商支持邮箱规则（@前含 support、@后含 manageengine/zohocorp，如 support@manageengine.com）。</summary>
+    /// <summary>线索的客服邮箱：取线索邮件里出现的客服邮箱（发件/收件/抄送都算），
+    /// 优先级为“客服发给我们的（From）＞我们发给客服的（To）＞只是被抄送的（Cc）”，同级取时间上最后出现的那个。
+    /// 不能笼统地“取最后出现的那个”：抄送里常混进别名/别国支持（例如 support@manageengine.cn 只是被抄在 Cc 里），
+    /// 会把本单真正的客服邮箱顶掉 —— 现象就是“上传日志”被误判成 .cn 而置灰。
+    /// 客服邮箱 = 关注的客服邮箱，或未关注但符合厂商支持邮箱规则（@前含 support、@后含 manageengine/zohocorp）。</summary>
     private static string ResolveSupportEmail(EmailNodeViewModel ev)
     {
         var support = App.Workflow.MonitoredAddresses;
-        string? found = null;
+        var byFrom = new List<string>();   // 客服发给我们的（最可信：本单的客服就是用这个邮箱在跟我们谈）
+        var byTo = new List<string>();     // 我们发给客服的
+        var byCc = new List<string>();     // 只是被抄送的（多为别名/别国支持，不代表本单客服）
         foreach (var email in ev.ThreadOwner.Thread.Emails.OrderBy(x => x.DateSent))
         {
-            if (IsSupportAddress(email.FromAddress, support)) found = email.FromAddress;
-            foreach (var a in SplitAddresses(email.ToAddresses).Concat(SplitAddresses(email.CcAddresses)))
-                if (IsSupportAddress(a, support)) found = a;
+            if (IsSupportAddress(email.FromAddress, support)) byFrom.Add(email.FromAddress);
+            foreach (var a in SplitAddresses(email.ToAddresses))
+                if (IsSupportAddress(a, support)) byTo.Add(a);
+            foreach (var a in SplitAddresses(email.CcAddresses))
+                if (IsSupportAddress(a, support)) byCc.Add(a);
         }
-        return found ?? "";
+        if (byFrom.Count > 0) return byFrom[^1];
+        if (byTo.Count > 0) return byTo[^1];
+        return byCc.Count > 0 ? byCc[^1] : "";
     }
 
     /// <summary>是否客服邮箱：关注的客服邮箱，或未关注但符合厂商支持邮箱规则（@前含 support、@后含 manageengine/zohocorp）。</summary>

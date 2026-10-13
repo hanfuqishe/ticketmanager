@@ -361,6 +361,11 @@ public class WorkflowService
             ApplyDomainMappings();
         }
 
+        // 打开态但 1 个月没有往来的线索 → 已搁置（搁置态）。确定性规则、不调 AI；
+        // 放在 AI 阶段之后、且无新邮件时也要跑：时间在走，不同步也会变旧。
+        var shelved = ShelveStaleThreadsInDb();
+        if (shelved > 0) progress?.Report($"已自动搁置 {shelved} 条超过 1 个月无往来的线索");
+
         // AI 整理完成后明确提示“同步完成”，避免状态栏停留在最后一条线索的整理进度上
         progress?.Report($"同步完成（新增 {newCount} 封邮件）");
         return newCount;
@@ -1453,8 +1458,35 @@ public class WorkflowService
             if (emailsByThread.TryGetValue(t.Id, out var list)) t.Emails = list;
             else t.Emails = new List<EmailMessage>();
         }
+        ShelveStaleThreads(threads);       // 打开态但 1 个月没往来的线索 → 已搁置（搁置态）
         ApplyNoticeTitles(threads);   // 首封只是“受理通知”的线索（同事代提单）：标题改成真实标题
         return threads;
+    }
+
+    /// <summary>把“打开态但已超过 1 个月没有新邮件往来”的线索标成「已搁置」（改为搁置态）。
+    /// 关闭态（已了结）与搁置态（如纳入开发计划）不在此列。
+    /// 加载线索时当场生效（只改内存，不写库）；落库见 <see cref="ShelveStaleThreadsInDb"/>。</summary>
+    private static void ShelveStaleThreads(List<TicketThread> threads, DateTimeOffset? now = null)
+    {
+        var n = now ?? DateTimeOffset.Now;
+        foreach (var t in threads)
+            if (t.ShouldShelve(n)) t.Shelve();
+    }
+
+    /// <summary>同上的落库版（同步收尾时跑一次）：时间在走，即使本次同步没有新邮件，也会有线 索变旧。
+    /// 确定性规则，不调 AI。返回本次新搁置的条数。</summary>
+    public int ShelveStaleThreadsInDb(DateTimeOffset? now = null)
+    {
+        var n = now ?? DateTimeOffset.Now;
+        int count = 0;
+        foreach (var t in _db.LoadThreads())
+        {
+            if (!t.ShouldShelve(n)) continue;
+            t.Shelve();
+            _db.UpdateThreadStatus(t.Id, t.Status, t.StatusSummary, t.StatusReason);
+            count++;
+        }
+        return count;
     }
 
     /// <summary>把“首封只是自动通知”的线索标题改成真实标题。只改内存（不写库、不调 AI）：
@@ -1542,8 +1574,10 @@ public class WorkflowService
         if (DateTimeOffset.TryParse(_db.GetSetting("last_status_summary_at"), out var ts))
             lastSummarized = ts;
 
+        var nowForStale = DateTimeOffset.Now;
         var pending = threads
             .Where(t => string.IsNullOrEmpty(t.Status) || t.LastActivity > lastSummarized)
+            .Where(t => !t.ShouldShelve(nowForStale))   // 将被自动搁置的陈线索（1 个月无往来）不必再花 AI
             .ToList();
         if (pending.Count == 0) return;
 

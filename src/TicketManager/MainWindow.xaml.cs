@@ -1740,7 +1740,7 @@ public partial class MainWindow : Window
                         CustomerGroupViewModel c => !IsCustomerAllClosed(c),   // 有进行中 → 展开；全部结束 → 收起
                         ProductGroupViewModel p => !IsProductAllClosed(p),
                         // 线索：仅“未结束 且 有新邮件”才展开；无新邮件的进行中线索也保持折叠
-                        EmailNodeViewModel ev when ev.IsRoot => !MainViewModel.IsThreadClosed(ev.ThreadOwner.Thread) && ev.ThreadOwner.HasNewMail,
+                        EmailNodeViewModel ev when ev.IsRoot => !MainViewModel.IsThreadInactive(ev.ThreadOwner.Thread) && ev.ThreadOwner.HasNewMail,
                         _ => null
                     };
                     if (expand.HasValue) tvi.IsExpanded = expand.Value;
@@ -1764,7 +1764,7 @@ public partial class MainWindow : Window
 
     /// <summary>产品下所有线索都已结束。</summary>
     private static bool IsProductAllClosed(ProductGroupViewModel p)
-        => p.Threads.Count > 0 && p.Threads.All(r => MainViewModel.IsThreadClosed(r.ThreadOwner.Thread));
+        => p.Threads.Count > 0 && p.Threads.All(r => MainViewModel.IsThreadInactive(r.ThreadOwner.Thread));
 
     /// <summary>企业下所有产品都已结束。</summary>
     private static bool IsCustomerAllClosed(CustomerGroupViewModel c)

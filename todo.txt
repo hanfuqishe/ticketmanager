@@ -42,6 +42,15 @@
     判据是 `SubjectParser.IsAutoNotice`（全库扫过：只命中 3 种回执/关闭话术，真标题零误判）；
     回归探测 `tools/NoticeProbe`（跑真实库，产物 noticeprobe.txt）。`ClearFirstEmailTitles` 不再清通知首封的 AiTitle。
 
+- ✅ 线索状态**三态**：打开 / 关闭 / 搁置（`Models/TicketThread.cs` 的 `ThreadState` + `ClosedStatuses`/`ShelvedStatuses`）。
+    打开 = 还要跟进（新建/处理中/等待×3/需升级/未知）；关闭 = 已了结（已解决/已完成/已关闭/合并拆分）；
+    搁置 = 事情没完但不用跟（**纳入开发计划**=等排期、**已搁置**=长期无往来）。
+    “仅打开的工单”过滤与智能折叠都只看 `IsOpen`（`MainViewModel.IsThreadInactive`，原 IsThreadClosed 改名），关闭与搁置都算无需关注。
+- ✅ 自动搁置：打开态且超过 30 天（`TicketThread.StaleAfter`）没有新邮件往来 → 置为「已搁置」；关闭态/搁置态天然豁免
+    （“纳入开发计划”不会被改标签）。加载线索时当场生效（内存），同步收尾时落库（无新邮件的同步也跑——时间在走）；
+    来了新邮件就自动回到活跃状态；也不再为将被搁置的陈线索花 AI 状态总结。
+    实测三态分布：打开 22 / 关闭 66 / 搁置 84（含纳入开发计划 5）。
+
 ### 交互/视觉修复（本轮）
 - ✅ 取消工单后列表不再“复活”：MergeThreads 记录 removedByFilter（过滤隐藏的线索不再被 _threads 旧数据补回）。
 - ✅ 选中新邮件后延迟 1 秒才置为已读（快速划过不误标）；展开线索自动选中其中第一封新邮件（点三角与双击都生效）。

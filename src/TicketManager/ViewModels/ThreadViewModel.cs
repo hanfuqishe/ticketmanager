@@ -41,6 +41,7 @@ public class ThreadViewModel
         "合并或拆分为其他工单" => Brushes.Teal,
         "处理中" => Brushes.SteelBlue,
         "需升级" => Brushes.Red,
+        "已搁置" => Brushes.SlateGray,
         "新建" => Brushes.Gray,
         _ => Brushes.Gray
     };
@@ -59,6 +60,7 @@ public class ThreadViewModel
         "合并或拆分为其他工单" => (FromHex("#0F766E"), FromHex("#F0FDFA")),
         "处理中" => (FromHex("#607D8B"), FromHex("#ECEFF1")),
         "需升级" => (FromHex("#C62828"), FromHex("#FFEBEE")),
+        "已搁置" => (FromHex("#616161"), FromHex("#F5F5F5")),
         "新建" => (FromHex("#9E9E9E"), FromHex("#F5F5F5")),
         _ => (FromHex("#9E9E9E"), FromHex("#F0F0F0"))
     };

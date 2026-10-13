@@ -251,7 +251,7 @@ public class MainViewModel : ViewModelBase
     private bool MatchesFilter(TicketThread t)
         => MatchesSearch(t) && (!_newMailOnly || HasNewMail(t)) && (!_starredOnly || t.Emails.Any(e => e.Starred))
            // “仅打开工单”：已结束的线索隐藏；但若它有新邮件（可能是刚关闭后又有回复/通知）则仍显示，直到新邮件看完
-           && (!_openOnly || !IsThreadClosed(t) || HasNewMail(t));
+           && (!_openOnly || !IsThreadInactive(t) || HasNewMail(t));
 
     /// <summary>线程当前是否应显示在树中（与过滤条件一致）。供主窗口在淡出动画结束后判断该线程的去留。</summary>
     public bool IsThreadDisplayed(TicketThread t) => MatchesFilter(t);
@@ -983,7 +983,7 @@ public class MainViewModel : ViewModelBase
         });
         // “仅显示打开工单”开启时，线索被标记为已结束且已无新邮件 → 就地隐藏（淡出）；
         // 若它仍含未读新邮件（刚关闭后又来回复/通知）则保留显示，直到新邮件被看完
-        if (targetRoot != null && _openOnly && IsThreadClosed(targetRoot.ThreadOwner.Thread)
+        if (targetRoot != null && _openOnly && IsThreadInactive(targetRoot.ThreadOwner.Thread)
             && !targetRoot.ThreadOwner.Thread.Emails.Any(e => e.IsNew))
             ClosedThreadFadeOutRequested?.Invoke(targetRoot);
         // 若右侧详情面板显示的是该线程，同步刷新标题/总结/状态框配色/理由
@@ -1340,7 +1340,7 @@ public class MainViewModel : ViewModelBase
     /// 并通知主窗口刷新托盘角标（无新邮件即清除）。</summary>
     private void AfterEmailsSeen(TicketThread t)
     {
-        if (_openOnly && IsThreadClosed(t) && !t.Emails.Any(e => e.IsNew))
+        if (_openOnly && IsThreadInactive(t) && !t.Emails.Any(e => e.IsNew))
         {
             var root = FindRootNodeByThread(t);
             if (root != null) ClosedThreadFadeOutRequested?.Invoke(root);
@@ -1473,12 +1473,12 @@ public class MainViewModel : ViewModelBase
                     {
                         SetEmailExpandDepth(root, ExpandDepth);
                         // 线索已结束且无新邮件（有未读新邮件的已结束线索保留展开，便于查看）：默认折叠该线索（尊重用户手动展开）
-                        if (IsThreadClosed(t) && !HasNewMail(t) && !_vmExpansion.ContainsKey("e:" + root.Email.Id))
+                        if (IsThreadInactive(t) && !HasNewMail(t) && !_vmExpansion.ContainsKey("e:" + root.Email.Id))
                             root.ExpandedByDefault = false;
                         product.Threads.Add(root);
                     }
                     // 已结束但含未读新邮件的线索仍需关注，产品不算“全部已结束”
-                    if (!IsThreadClosed(t) || HasNewMail(t)) productAllClosed = false;
+                    if (!IsThreadInactive(t) || HasNewMail(t)) productAllClosed = false;
                 }
                 // 产品下所有线索都已结束 → 产品默认折叠（尊重用户手动展开）
                 if (productAllClosed && !_vmExpansion.ContainsKey("p:" + pg.Key))
@@ -1527,15 +1527,10 @@ public class MainViewModel : ViewModelBase
         _ignoredGroups.Add(group);
     }
 
-    /// <summary>视为“已结束、无需继续关注”的线索状态：已完成/已解决、已关闭、合并或拆分为其他工单。</summary>
-    private static readonly HashSet<string> ClosedThreadStatuses = new(StringComparer.Ordinal)
-    {
-        "已解决", "已完成", "已关闭", "合并或拆分为其他工单"
-    };
-
-    /// <summary>线索是否已结束（已完成/已解决、已关闭、合并或拆分为其他工单），供“智能折叠”使用。</summary>
-    public static bool IsThreadClosed(TicketThread t)
-        => ClosedThreadStatuses.Contains(t.Status);
+    /// <summary>线索是否“无需继续关注”= 关闭态（已解决/已完成/已关闭/合并拆分）或搁置态（纳入开发计划/已搁置），
+    /// 供“仅打开的工单”过滤与“智能折叠”使用（见 Models/TicketThread.cs 的三态模型）。</summary>
+    public static bool IsThreadInactive(TicketThread t)
+        => t.IsInactive;
 
     /// <summary>递归设置邮件节点默认展开：优先保留重建前用户手动折叠状态，否则按展开层次（仅层次4展开）。</summary>
     private void SetEmailExpandDepth(EmailNodeViewModel node, int depth)
@@ -1706,7 +1701,7 @@ public class MainViewModel : ViewModelBase
         {
             SetEmailExpandDepth(root, ExpandDepth);
             // 增量同步新增的已结束且无新邮件线索默认折叠（尊重用户手动展开）；有未读新邮件的保留展开
-            if (IsThreadClosed(t) && !HasNewMail(t) && !_vmExpansion.ContainsKey("e:" + root.Email.Id))
+            if (IsThreadInactive(t) && !HasNewMail(t) && !_vmExpansion.ContainsKey("e:" + root.Email.Id))
                 root.ExpandedByDefault = false;
             InsertThreadSorted(prod, root);
         }

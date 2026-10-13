@@ -105,6 +105,7 @@ public static class ExportService
         "合并或拆分为其他工单" => "#F0FDFA",
         "处理中" => "#ECEFF1",
         "需升级" => "#FFEBEE",
+        "已搁置" => "#F5F5F5",
         "新建" => "#F5F5F5",
         _ => null
     };

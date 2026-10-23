@@ -50,6 +50,17 @@
     （“纳入开发计划”不会被改标签）。加载线索时当场生效（内存），同步收尾时落库（无新邮件的同步也跑——时间在走）；
     来了新邮件就自动回到活跃状态；也不再为将被搁置的陈线索花 AI 状态总结。
     实测三态分布：打开 22 / 关闭 66 / 搁置 84（含纳入开发计划 5）。
+- ✅ 同步范围补上**自定义归档文件夹**：之前只同步 Inbox/Sent/Spam，而厂商/自己的规则会把工单往来归档到
+    `Endpoint Central`、`OPManager` 这类自定义夹子 → 整条会话的主体（首封报障 + 客服回复）根本没进库
+    （现象：某线索只有零星几封、"有一封同主题邮件没入库"）。现在除系统文件夹外都扫，但只收
+    「主题带工单号 **或** 属于本地已有对话」的邮件（邮件列表/订阅夹如 `IETF` 自然被过滤），
+    归档副本换了 MessageId 的按「同主题+同正文」去重（`DatabaseService.EmailExistsByContent`）。
+    实测：邮件 1,423 → 1,867，`Endpoint Central` 425 封入库，线索 8003692 由 16 封 → 36 封。
+- ✅ 通知/提醒类邮件归位：主题里以纯数字写的**已知工单号**（`EBS - Reminder for Logs- Request - 8003692`、
+    `Your Feedback is important - 7950409 - EBS`、`About ticket 6380320`）原先单独成线索 →
+    `ThreadBuilder.PickKnownTicketInSubject` 归回对应工单（只在数字是真实工单号且唯一时命中）。
+    回归/维护工具：`tools/RegroupProbe`（默认演练，`--apply` 才重建真库）、`tools/MailProbe`（查邮箱某天/某主题，
+    标出本地库有没有，用来定位"为什么某封没入库"）。
 
 ### 交互/视觉修复（本轮）
 - ✅ 取消工单后列表不再“复活”：MergeThreads 记录 removedByFilter（过滤隐藏的线索不再被 _threads 旧数据补回）。

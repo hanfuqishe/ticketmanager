@@ -110,6 +110,10 @@ public class ThreadBuilder
             }
         }
 
+        // 第三步(补充二)：通知/提醒类邮件把工单号直接写在主题里（无 [## ##] 标记、Zoho threadId 也常为 0），
+        // 如「EBS - Reminder for Logs- Request - 8003692」→ 按“主题里的已知工单号”并回对应线索。
+        AttachNoticeMailsByTicketNumber(allEmails, ticketOf);
+
         // 第四步：按工单号分组；无工单号的先按 Zoho threadId 归并（同一会话同一线索），
         // 都没有的按引用链归属同一对话（同对话多封无主邮件并一组），否则各自独立成线索。
         // 不能再用 企业|产品 兜底——那会把同一企业同一产品下的多条无关报障堆进同一条大杂烩线索
@@ -377,6 +381,40 @@ public class ThreadBuilder
     }
 
     /// <summary>从 Zoho 自动回复正文提取“登记工单”的原报障主题（中文引号）；无则返回空串。</summary>
+    /// <summary>
+    /// 第三步(补充二)：通知/提醒类邮件把工单号直接写在主题里（不是 [## ##] 标记），
+    /// 如「EBS - Reminder for Logs- Request - 8003692」「Your Feedback is important - 7950409 - EBS」「About ticket 6380320」。
+    /// 这类邮件既无工单标记、Zoho threadId 也常常是 0，会单独成一条剩线 —— 用“主题里的纯数字 = 已知工单号”把它们并回对应线索。
+    /// 只在数字是**本批邮件里真实存在的工单号**且唯一时才归并，避免把版本号/电话等无关数字当工单号。
+    /// </summary>
+    private static void AttachNoticeMailsByTicketNumber(
+        List<EmailMessage> allEmails, Dictionary<long, string> ticketOf)
+    {
+        var known = new HashSet<string>(ticketOf.Values.Where(v => !string.IsNullOrEmpty(v)), StringComparer.OrdinalIgnoreCase);
+        if (known.Count == 0) return;
+        foreach (var e in allEmails)
+        {
+            if (!string.IsNullOrEmpty(ticketOf[e.Id])) continue;
+            var hit = PickKnownTicketInSubject(e.Subject, known);
+            if (hit != null) ticketOf[e.Id] = hit;
+        }
+    }
+
+    /// <summary>主题里以独立数字形式出现的已知工单号；出现多个不同工单号时不猜（返回 null）。</summary>
+    private static string? PickKnownTicketInSubject(string? subject, HashSet<string> known)
+    {
+        if (string.IsNullOrWhiteSpace(subject)) return null;
+        string? found = null;
+        foreach (Match m in Regex.Matches(subject, @"(?<!\d)\d{5,10}(?!\d)"))
+        {
+            var v = m.Value;
+            if (!known.Contains(v)) continue;
+            if (found != null && !string.Equals(found, v, StringComparison.OrdinalIgnoreCase)) return null;
+            found = v;
+        }
+        return found;
+    }
+
     private static string ExtractReportedSubject(string body)
     {
         var m = Regex.Match(body, @"工单[:：]\s*“(?<s>[^”]+)”");

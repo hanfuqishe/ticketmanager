@@ -224,6 +224,17 @@ public class DatabaseService : IDisposable
             new { tid = threadId }) != null;
     }
 
+    /// <summary>是否已有“同主题 + 同正文”的邮件（不分文件夹）：归档夹里的副本可能换了 MessageId 但正文/主题一样，
+    /// 用它阻止同一条回复因被归档而重复入库。要求主题也相同，避免把内容雷同的通知类邮件（如“我们已收到您的工单”）误合。</summary>
+    public bool EmailExistsByContent(string contentHash, string subject)
+    {
+        if (string.IsNullOrEmpty(contentHash)) return false;
+        using var conn = Open();
+        return conn.ExecuteScalar<long?>(
+            "SELECT Id FROM Emails WHERE ContentHash = @h AND Subject = @s LIMIT 1",
+            new { h = contentHash, s = subject ?? "" }) != null;
+    }
+
     // ================= Emails =================
 
     /// <summary>按 MessageId（其次 Folder+Uid）去重后插入或更新，返回记录 Id。</summary>

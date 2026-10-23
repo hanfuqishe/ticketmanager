@@ -437,16 +437,33 @@ public class WorkflowService
         if (toSync.Count == 0)
             throw new InvalidOperationException("未找到 Inbox / Sent 文件夹。");
 
+        // 额外文件夹：厂商/自己的规则常把工单往来归档到自定义文件夹（如 “Endpoint Central”“OPManager”），
+        // 只同步 Inbox/Sent/Spam 会漏掉这些邮件（现象：某条会话只有部分回复，缺首封或中间几封）。
+        // 这些文件夹只收“主题带工单号、或属于本地已存在的同一对话”的邮件，避免把邮件列表/订阅/通知夹塞进库。
+        var extra = folders
+            .Where(f => toSync.All(x => x.Id != f.Id))
+            .Where(f => !SystemFolderNames.Contains(f.Name ?? ""))
+            .ToList();
+
         int newCount = 0;
         foreach (var folder in toSync)
             newCount += await ZohoSyncFolderAsync(api, accountId.Value, folder, progress, ct);
+        foreach (var folder in extra)
+            newCount += await ZohoSyncFolderAsync(api, accountId.Value, folder, progress, ct, extraFolder: true);
         return newCount;
     }
+
+    /// <summary>不作为“额外归档夹”扫描的系统文件夹（收件箱/已发送/垃圾邮件已单独处理）。</summary>
+    private static readonly HashSet<string> SystemFolderNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Inbox", "Sent", "Spam", "Junk", "Trash", "Drafts", "Draft", "Outbox", "Templates", "Snoozed",
+        "收件箱", "已发送", "垃圾邮件", "已删除", "草稿", "草稿箱"
+    };
 
     /// <summary>同步单个文件夹：增量按 receivedTime 游标断点续传；全量(游标=0)扫描时间窗口并跳过已下载。
     /// 两阶段：先扫描列表收集待下载邮件（报告扫描进度），再逐封下载内容（报告 已下载/总数 进度）。</summary>
     private async Task<int> ZohoSyncFolderAsync(ZohoMailApiService api, long accountId, ZohoFolder folder,
-        IProgress<string>? progress, CancellationToken ct)
+        IProgress<string>? progress, CancellationToken ct, bool extraFolder = false)
     {
         var cursor = _db.GetZohoCursor(folder.Name);
         bool fullScan = cursor <= 0;
@@ -492,6 +509,12 @@ public class WorkflowService
                 // 先判断是否属于关注的邮箱，再看本地是否已下载：
                 // 新增关注邮箱后全量重扫时，能重新拉取其相关且未下载的邮件
                 if (!IsMonitoredSummary(m)) continue;
+                // 额外归档夹：只收与工单体系相关的（主题带工单号，或属于本地已存在的同一 Zoho 对话），
+                // 邮件列表/订阅/通知夹里的无关邮件不进库。
+                if (extraFolder &&
+                    string.IsNullOrEmpty(SubjectParser.Parse(m.Subject ?? "")?.TicketNumber) &&
+                    !(m.ThreadId > 0 && _db.EmailExistsByZohoThreadId(m.ThreadId)))
+                    continue;
                 if (_db.EmailExistsByZohoId(folder.Name, m.MessageId.ToString()))
                     continue;                                                // 已下载，跳过
                 toDownload.Add(m);
@@ -513,6 +536,13 @@ public class WorkflowService
                 var email = await api.ToEmailMessageAsync(accountId, folder.Id, m, folder.Name, ct2);
                 if (email != null && IsMonitoredZoho(email))
                 {
+                    // 归档夹里的副本可能换了 MessageId（正文/主题没变）：按“同主题+同正文”认作已入库，避免重复
+                    if (extraFolder && _db.EmailExistsByContent(email.ContentHash, email.Subject))
+                    {
+                        var d0 = Interlocked.Increment(ref downloaded);
+                        progress?.Report($"正在下载{label}… {d0}/{toDownload.Count}");
+                        return;
+                    }
                     var parsed = SubjectParser.Parse(email.Subject);
                     if (parsed != null)
                     {
